@@ -1,0 +1,10 @@
+[workspace]
+publish = false
+git_tag_enable = true
+git_release_enable = true
+release_always = false
+
+[[package]]
+name = "ritobin-tools"
+release = true
+publish = false
