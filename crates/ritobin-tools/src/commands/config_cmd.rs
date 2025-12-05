@@ -43,7 +43,7 @@ fn print_path_config(
 }
 
 pub fn show_config() -> Result<()> {
-    let cfg = config::load_config();
+    let (cfg, _) = config::load_or_create_config()?;
     let config_path = config::default_config_path();
 
     println!();
@@ -78,12 +78,48 @@ pub fn reset_config() -> Result<()> {
     println!();
     println!("  {} {}", "Config file:".bright_white().bold(), config_path);
     println!();
+
+    Ok(())
+}
+
+pub fn set_config_value(key: &str, value: &str) -> Result<()> {
+    let mut table = config::load_config_as_table()?;
+    let toml_value = parse_toml_value(value);
+
+    table.insert(key.to_string(), toml_value);
+
+    let _: AppConfig = table
+        .clone()
+        .try_into()
+        .map_err(|e| miette::miette!("Invalid configuration: {}", e))?;
+
+    config::save_config_table(&table)
+        .map_err(|e| miette::miette!("Failed to save config: {}", e))?;
+
     println!(
-        "  {}",
-        "Run 'league-mod config auto-detect' to find your League installation".bright_cyan()
+        "{}",
+        format!("✓ Set '{}' = '{}'", key, value)
+            .bright_green()
+            .bold()
     );
 
     Ok(())
+}
+
+/// Parse a string value into an appropriate TOML value type
+fn parse_toml_value(value: &str) -> toml::Value {
+    if let Ok(b) = value.parse::<bool>() {
+        return toml::Value::Boolean(b);
+    }
+    if let Ok(i) = value.parse::<i64>() {
+        return toml::Value::Integer(i);
+    }
+    if let Ok(f) = value.parse::<f64>()
+        && value.contains('.')
+    {
+        return toml::Value::Float(f);
+    }
+    toml::Value::String(value.to_string())
 }
 
 /// Ensures config.toml exists.

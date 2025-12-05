@@ -1,11 +1,6 @@
-use camino::Utf8Path;
 use clap::builder::{Styles, styling::AnsiColor};
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use league_toolkit::file::LeagueFileKind;
 use miette::Result;
-use serde::Deserialize;
-use serde::de::IntoDeserializer;
-use serde::de::value::Error;
 use tracing::Level;
 use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::filter::LevelFilter;
@@ -13,12 +8,26 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{filter, fmt};
-use utils::config::{default_config_path, load_or_create_config};
 
-use crate::commands::{convert, diff};
+use crate::commands::{config_cmd, convert, diff};
 
 mod commands;
 mod utils;
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Show current configuration
+    Show,
+    /// Set a configuration value
+    Set {
+        /// Configuration key to set (e.g., 'hashtable_dir')
+        key: String,
+        /// Value to set for the configuration key
+        value: String,
+    },
+    /// Reset configuration to defaults
+    Reset,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum VerbosityLevel {
@@ -105,6 +114,12 @@ pub enum Commands {
         /// Disable colored output
         no_color: bool,
     },
+
+    /// Manage application configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 }
 
 fn parse_args() -> Args {
@@ -142,6 +157,11 @@ fn main() -> Result<()> {
             context,
             no_color,
         } => diff::diff(file1, file2, context, no_color),
+        Commands::Config { action } => match action {
+            ConfigAction::Show => config_cmd::show_config(),
+            ConfigAction::Set { key, value } => config_cmd::set_config_value(&key, &value),
+            ConfigAction::Reset => config_cmd::reset_config(),
+        },
     }
 }
 
@@ -208,19 +228,6 @@ fn initialize_tracing(verbosity: VerbosityLevel, show_progress: bool) -> Result<
         registry.init();
     }
     Ok(())
-}
-
-fn parse_filter_type(s: &str) -> Result<LeagueFileKind, String> {
-    let deserializer: serde::de::value::StrDeserializer<Error> = s.into_deserializer();
-    if let Ok(kind) = LeagueFileKind::deserialize(deserializer) {
-        return Ok(kind);
-    }
-
-    // Fallback to extension
-    match LeagueFileKind::from_extension(s) {
-        LeagueFileKind::Unknown => Err(format!("Unknown file kind: {}", s)),
-        other => Ok(other),
-    }
 }
 
 fn cli_styles() -> Styles {

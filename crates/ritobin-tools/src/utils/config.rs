@@ -9,7 +9,6 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Application-wide configuration stored in config.toml.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -43,21 +42,6 @@ pub fn default_config_path() -> Option<Utf8PathBuf> {
     config_path("config.toml")
 }
 
-/// Loads the application configuration from config.toml.
-/// Returns default configuration if file doesn't exist or cannot be parsed.
-pub fn load_config() -> AppConfig {
-    if let Some(path) = default_config_path() {
-        if Path::new(path.as_str()).exists() {
-            if let Ok(content) = fs::read_to_string(path.as_str()) {
-                if let Ok(cfg) = toml::from_str(&content) {
-                    return cfg;
-                }
-            }
-        }
-    }
-    AppConfig::default()
-}
-
 /// Normalizes a path to use forward slashes
 fn normalize_path(path: &Utf8PathBuf) -> Utf8PathBuf {
     Utf8PathBuf::from(path.as_str().replace('\\', "/"))
@@ -82,6 +66,7 @@ pub fn save_config(cfg: &AppConfig) -> io::Result<()> {
 }
 
 /// Loads existing configuration or creates a new one with defaults.
+/// Missing fields in the config file are filled with default values.
 pub fn load_or_create_config() -> Result<(AppConfig, Utf8PathBuf)> {
     let path = default_config_path().ok_or(miette::miette!("Could not determine config path"))?;
 
@@ -89,9 +74,16 @@ pub fn load_or_create_config() -> Result<(AppConfig, Utf8PathBuf)> {
         let content = fs::read_to_string(path.as_str())
             .into_diagnostic()
             .wrap_err("Failed to read config file")?;
-        let cfg = toml::from_str(&content)
+        let mut cfg: AppConfig = toml::from_str(&content)
             .into_diagnostic()
             .wrap_err("Failed to parse config file")?;
+
+        // Fill in defaults for missing optional fields
+        let defaults = AppConfig::default();
+        if cfg.hashtable_dir.is_none() {
+            cfg.hashtable_dir = defaults.hashtable_dir;
+        }
+
         Ok((cfg, path))
     } else {
         let cfg = AppConfig::default();
@@ -102,38 +94,61 @@ pub fn load_or_create_config() -> Result<(AppConfig, Utf8PathBuf)> {
     }
 }
 
-/// Reads JSON from a path into type T. Returns Ok(None) if file cannot be read or parsed.
-pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
-    match fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<T>(&bytes) {
-            Ok(v) => Ok(Some(v)),
-            Err(_) => Ok(None),
-        },
-        Err(_) => Ok(None),
+/// Loads configuration as a raw TOML table for flexible editing.
+pub fn load_config_as_table() -> Result<toml::Table> {
+    let path = default_config_path().ok_or(miette::miette!("Could not determine config path"))?;
+
+    if Path::new(path.as_str()).exists() {
+        let content = fs::read_to_string(path.as_str())
+            .into_diagnostic()
+            .wrap_err("Failed to read config file")?;
+
+        toml::from_str(&content)
+            .into_diagnostic()
+            .wrap_err("Failed to parse config file")
+    } else {
+        let cfg = AppConfig::default();
+        let content = toml::to_string_pretty(&cfg)
+            .into_diagnostic()
+            .wrap_err("Failed to serialize default config")?;
+        toml::from_str(&content)
+            .into_diagnostic()
+            .wrap_err("Failed to parse default config")
     }
 }
 
-/// Writes pretty-formatted JSON to the given path.
-pub fn write_json_pretty<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let data = serde_json::to_vec_pretty(value).unwrap_or_else(|_| b"{}".to_vec());
-    fs::write(path, data)
-}
-
-/// Returns current UNIX epoch seconds.
-pub fn now_epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+/// Saves a raw TOML table to the config file.
+pub fn save_config_table(table: &toml::Table) -> io::Result<()> {
+    if let Some(path) = default_config_path() {
+        let content = toml::to_string_pretty(table).map_err(io::Error::other)?;
+        fs::write(path.as_str(), content)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Could not determine config path",
+        ))
+    }
 }
 
 /// Returns the default directory where wad hashtables should be looked up.
 /// Uses the user's Documents folder: Documents/LeagueToolkit/bin_hashtables
+/// Falls back to ~/.local/share/LeagueToolkit/bin_hashtables on Linux if Documents isn't available
 pub fn default_hashtable_dir() -> Option<Utf8PathBuf> {
-    let user_dirs = directories_next::UserDirs::new()?;
-    let doc_dir = user_dirs.document_dir()?;
-    let mut path = doc_dir.to_path_buf();
-    path.push("LeagueToolkit");
+    // Try Documents folder first (Windows, macOS, and some Linux setups)
+    if let Some(doc_dir) =
+        directories_next::UserDirs::new().and_then(|u| u.document_dir().map(|p| p.to_path_buf()))
+    {
+        let mut path = doc_dir;
+        path.push("LeagueToolkit");
+        path.push("bin_hashtables");
+        if let Ok(utf8_path) = Utf8PathBuf::from_path_buf(path) {
+            return Some(utf8_path);
+        }
+    }
+
+    // Fallback: use data directory (~/.local/share on Linux, AppData on Windows)
+    let data_dirs = directories_next::ProjectDirs::from("", "", "LeagueToolkit")?;
+    let mut path = data_dirs.data_dir().to_path_buf();
     path.push("bin_hashtables");
     Utf8PathBuf::from_path_buf(path).ok()
 }
