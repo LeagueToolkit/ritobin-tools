@@ -15,7 +15,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{filter, fmt};
 use utils::config::{default_config_path, load_or_create_config};
 
-use crate::commands::convert;
+use crate::commands::{convert, diff};
 
 mod commands;
 mod utils;
@@ -74,6 +74,7 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Convert between .bin (binary) and .py/.ritobin (text) formats
     Convert {
         /// Path to the input file. The output format is automatically determined based on the file extension.
         input: String,
@@ -86,6 +87,23 @@ pub enum Commands {
         /// Whether to recursively convert all files in the input directory. Only valid if the input is a directory.
         /// If the input is a file, this option is ignored.
         recursive: bool,
+    },
+
+    /// Diff two .bin or .ritobin files and show the differences
+    Diff {
+        /// Path to the first file to compare
+        file1: String,
+
+        /// Path to the second file to compare
+        file2: String,
+
+        #[arg(long, short = 'C', default_value = "3")]
+        /// Number of context lines to show around changes
+        context: usize,
+
+        #[arg(long)]
+        /// Disable colored output
+        no_color: bool,
     },
 }
 
@@ -118,6 +136,12 @@ fn main() -> Result<()> {
             output,
             recursive,
         } => convert::convert(input, output, recursive),
+        Commands::Diff {
+            file1,
+            file2,
+            context,
+            no_color,
+        } => diff::diff(file1, file2, context, no_color),
     }
 }
 
