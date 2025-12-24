@@ -9,7 +9,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{filter, fmt};
 
-use crate::commands::{config_cmd, convert, diff};
+use crate::commands::{config_cmd, convert, diff, download_hashes};
 
 mod commands;
 mod utils;
@@ -120,6 +120,10 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Download hashtable files from CommunityDragon
+    #[command(alias = "dl")]
+    DownloadHashes,
 }
 
 fn parse_args() -> Args {
@@ -162,6 +166,7 @@ fn main() -> Result<()> {
             ConfigAction::Set { key, value } => config_cmd::set_config_value(&key, &value),
             ConfigAction::Reset => config_cmd::reset_config(),
         },
+        Commands::DownloadHashes => download_hashes::download_hashes(),
     }
 }
 

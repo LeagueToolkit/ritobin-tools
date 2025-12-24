@@ -4,6 +4,14 @@ use camino::Utf8Path;
 use fancy_regex::Regex;
 use miette::Result;
 
+/// Format a path as a clickable hyperlink using OSC 8 escape sequences.
+/// Supported by modern terminals like Windows Terminal, iTerm2, VS Code terminal, etc.
+pub fn hyperlink_path(path: impl AsRef<Utf8Path>) -> String {
+    let path = path.as_ref();
+    let url = format!("file://{}", path.as_str().replace('\\', "/"));
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, path)
+}
+
 /// Creates a filter pattern from an optional regex string.
 /// Defaults to case-insensitive matching unless the user explicitly sets (?i) or (?-i).
 pub fn create_filter_pattern(pattern: Option<String>) -> Result<Option<Regex>> {

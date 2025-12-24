@@ -8,6 +8,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use walkdir::WalkDir;
 
 use crate::utils::config::load_or_create_config;
+use crate::utils::hyperlink_path;
 
 /// Supported file extensions for conversion
 const SUPPORTED_EXTENSIONS: &[&str] = &["bin", "py", "ritobin"];
@@ -147,7 +148,11 @@ fn convert_bin_to_ritobin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
         .into_diagnostic()
         .wrap_err("Failed to write output file")?;
 
-    tracing::info!("Converted {} -> {}", input_path, output_path);
+    tracing::info!(
+        "Converted {} -> {}",
+        hyperlink_path(input_path),
+        hyperlink_path(&output_path)
+    );
 
     Ok(())
 }
@@ -194,7 +199,11 @@ fn convert_ritobin_to_bin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
         .into_diagnostic()
         .wrap_err("Failed to write output file")?;
 
-    tracing::info!("Converted {} -> {}", input_path, output_path);
+    tracing::info!(
+        "Converted {} -> {}",
+        hyperlink_path(input_path),
+        hyperlink_path(&output_path)
+    );
 
     Ok(())
 }

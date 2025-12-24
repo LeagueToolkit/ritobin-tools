@@ -29,3 +29,5 @@ ltk_ritobin = { git = "https://github.com/LeagueToolkit/league-toolkit", rev = "
 ltk_meta = { git = "https://github.com/LeagueToolkit/league-toolkit", rev = "77bf94f0dbb7e396f61348f531989abda296a1ae" }
 miette = { version = "7.6.0", features = ["fancy"] }
 similar = "2.6"
+ureq = "2.10"
+indicatif = "0.18"
