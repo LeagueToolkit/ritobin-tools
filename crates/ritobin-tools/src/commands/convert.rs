@@ -185,7 +185,7 @@ fn convert_ritobin_to_bin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
     // Write binary output file
     // BinTree::to_writer requires Seek, so we write to a cursor first then to file
     let mut cursor = Cursor::new(Vec::new());
-    tree.to_writer(&mut cursor, false)
+    tree.to_writer(&mut cursor)
         .into_diagnostic()
         .wrap_err("Failed to convert to binary format")?;
 
