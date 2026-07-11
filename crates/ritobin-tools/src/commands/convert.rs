@@ -2,9 +2,9 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Write};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use ltk_meta::BinTree;
-use ltk_ritobin::{HashMapProvider, HexHashProvider, WriterConfig};
-use miette::{IntoDiagnostic, Result, WrapErr};
+use ltk_meta::Bin;
+use ltk_ritobin::{Cst, HashMapProvider, Print, print::PrintConfig};
+use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use walkdir::WalkDir;
 
 use crate::utils::config::load_or_create_config;
@@ -43,25 +43,21 @@ fn convert_directory(dir_path: &Utf8Path, recursive: bool) -> Result<()> {
     let mut error_count = 0;
 
     for entry in walker.into_iter().filter_map(|e| e.ok()) {
-        // Convert to Utf8Path, skip non-UTF8 paths
         let Some(path) = Utf8Path::from_path(entry.path()) else {
             tracing::warn!("Skipping non-UTF8 path: {}", entry.path().display());
             continue;
         };
 
-        // Skip directories
         if path.is_dir() {
             continue;
         }
 
-        // Check if file has a supported extension
         let extension = path.extension().unwrap_or("");
 
         if !SUPPORTED_EXTENSIONS.contains(&extension) {
             continue;
         }
 
-        // Convert the file
         match convert_file(path, None) {
             Ok(()) => converted_count += 1,
             Err(e) => {
@@ -84,7 +80,6 @@ fn convert_directory(dir_path: &Utf8Path, recursive: bool) -> Result<()> {
     }
 }
 
-/// Convert a single file based on its extension
 fn convert_file(input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
     let extension = input_path.extension().unwrap_or("");
 
@@ -98,46 +93,35 @@ fn convert_file(input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()
     }
 }
 
-/// Convert a .bin file to ritobin text format (.py)
 fn convert_bin_to_ritobin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
     let (config, _) = load_or_create_config()?;
 
-    // Load the .bin file
     let file = File::open(input_path)
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to open input file: {}", input_path))?;
     let mut reader = BufReader::new(file);
 
-    let tree = BinTree::from_reader(&mut reader)
+    let tree = Bin::from_reader(&mut reader)
         .into_diagnostic()
         .wrap_err("Failed to parse .bin file")?;
 
-    // Convert to ritobin text format using hashtable provider if available,
-    // otherwise fall back to hex hash provider
     let ritobin_text = if let Some(hashtable_dir) = config.hashtable_dir.as_ref() {
         let mut hashtable_provider = HashMapProvider::new();
         hashtable_provider.load_from_directory(hashtable_dir);
 
-        ltk_ritobin::write_with_config_and_hashes(
-            &tree,
-            WriterConfig::default(),
-            &hashtable_provider,
-        )
+        tree.print_with_config(PrintConfig::default().with_hashes(hashtable_provider))
     } else {
-        ltk_ritobin::write_with_config_and_hashes(&tree, WriterConfig::default(), &HexHashProvider)
+        tree.print_with_config(PrintConfig::default())
     }
     .into_diagnostic()
     .wrap_err("Failed to convert to ritobin format")?;
 
-    // Determine output path
     let output_path = output.unwrap_or_else(|| {
-        // Replace .bin extension with .py (ritobin text format)
         let stem = input_path.file_stem().unwrap_or("output");
         let parent = input_path.parent().unwrap_or(Utf8Path::new("."));
         parent.join(format!("{}.py", stem))
     });
 
-    // Write output file
     let output_file = File::create(&output_path)
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to create output file: {}", output_path))?;
@@ -157,9 +141,7 @@ fn convert_bin_to_ritobin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
     Ok(())
 }
 
-/// Convert a ritobin text file (.py/.ritobin) to binary .bin format
 fn convert_ritobin_to_bin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
-    // Read the ritobin text file
     let mut file = File::open(input_path)
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to open input file: {}", input_path))?;
@@ -169,23 +151,20 @@ fn convert_ritobin_to_bin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
         .into_diagnostic()
         .wrap_err("Failed to read ritobin file")?;
 
-    // Parse ritobin text to BinTree
-    let tree = ltk_ritobin::parse_to_bin_tree(&ritobin_text)
-        .into_diagnostic()
-        .wrap_err("Failed to parse ritobin file")?;
+    let cst = Cst::parse(&ritobin_text);
+    let (bin, bin_errs) = cst.build_bin(&ritobin_text);
+    if !bin_errs.is_empty() {
+        return Err(miette!("Could not build bin"));
+    }
 
-    // Determine output path
     let output_path = output.unwrap_or_else(|| {
-        // Replace .py/.ritobin extension with .bin
         let stem = input_path.file_stem().unwrap_or("output");
         let parent = input_path.parent().unwrap_or(Utf8Path::new("."));
         parent.join(format!("{}.bin", stem))
     });
 
-    // Write binary output file
-    // BinTree::to_writer requires Seek, so we write to a cursor first then to file
     let mut cursor = Cursor::new(Vec::new());
-    tree.to_writer(&mut cursor)
+    bin.to_writer(&mut cursor)
         .into_diagnostic()
         .wrap_err("Failed to convert to binary format")?;
 

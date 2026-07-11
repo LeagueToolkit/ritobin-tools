@@ -3,8 +3,8 @@ use std::io::{BufReader, Read};
 
 use camino::Utf8Path;
 use colored::Colorize;
-use ltk_meta::BinTree;
-use ltk_ritobin::{HashMapProvider, HexHashProvider, WriterConfig};
+use ltk_meta::Bin as BinTree;
+use ltk_ritobin::{HashMapProvider, Print as _, print::PrintConfig};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use similar::{ChangeTag, TextDiff};
 
@@ -60,21 +60,14 @@ fn file_to_ritobin_text(
     match extension {
         "bin" => {
             let tree = load_bin_file(path)?;
+
             let ritobin_text = if let Some(hashtable_dir) = config.hashtable_dir.as_ref() {
                 let mut hashtable_provider = HashMapProvider::new();
                 hashtable_provider.load_from_directory(hashtable_dir);
 
-                ltk_ritobin::write_with_config_and_hashes(
-                    &tree,
-                    WriterConfig::default(),
-                    &hashtable_provider,
-                )
+                tree.print_with_config(PrintConfig::default().with_hashes(hashtable_provider))
             } else {
-                ltk_ritobin::write_with_config_and_hashes(
-                    &tree,
-                    WriterConfig::default(),
-                    &HexHashProvider,
-                )
+                tree.print_with_config(PrintConfig::default())
             }
             .into_diagnostic()
             .wrap_err_with(|| format!("Failed to convert {} to ritobin format", path))?;
