@@ -2,37 +2,38 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Write};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use colored::Colorize;
 use ltk_meta::Bin;
 use ltk_ritobin::{Cst, HashMapProvider, Print, print::PrintConfig};
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use walkdir::WalkDir;
 
-use crate::utils::config::load_or_create_config;
 use crate::utils::hyperlink_path;
+use crate::{Context, utils::config::load_or_create_config};
 
 /// Supported file extensions for conversion
-const SUPPORTED_EXTENSIONS: &[&str] = &["bin", "py", "ritobin"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["bin", "py", "ritobin", "rito"];
 
 /// Convert between .bin (binary) and .py/.ritobin (text) formats.
 ///
-/// - .bin -> .py: Converts binary bin file to ritobin text format
-/// - .py/.ritobin -> .bin: Parses ritobin text and converts to binary format
+/// - .bin -> .rito: Converts binary bin file to ritobin text format
+/// - .py/.rito/.ritobin -> .bin: Parses ritobin text and converts to binary format
 ///
 /// If input is a directory:
 /// - With recursive=true: converts all matching files in subdirectories
 /// - With recursive=false: converts only files in the immediate directory
-pub fn convert(input: String, output: Option<String>, recursive: bool) -> Result<()> {
+pub fn convert(ctx: Context, input: String, output: Option<String>, recursive: bool) -> Result<()> {
     let input_path = Utf8Path::new(&input);
 
     if input_path.is_dir() {
-        convert_directory(input_path, recursive)
+        convert_directory(ctx, input_path, recursive)
     } else {
-        convert_file(input_path, output.map(Utf8PathBuf::from))
+        convert_file(&ctx, input_path, output.map(Utf8PathBuf::from))
     }
 }
 
 /// Convert all matching files in a directory
-fn convert_directory(dir_path: &Utf8Path, recursive: bool) -> Result<()> {
+fn convert_directory(ctx: Context, dir_path: &Utf8Path, recursive: bool) -> Result<()> {
     let walker = if recursive {
         WalkDir::new(dir_path)
     } else {
@@ -58,7 +59,7 @@ fn convert_directory(dir_path: &Utf8Path, recursive: bool) -> Result<()> {
             continue;
         }
 
-        match convert_file(path, None) {
+        match convert_file(&ctx, path, None) {
             Ok(()) => converted_count += 1,
             Err(e) => {
                 tracing::error!("Failed to convert {}: {}", path, e);
@@ -80,22 +81,24 @@ fn convert_directory(dir_path: &Utf8Path, recursive: bool) -> Result<()> {
     }
 }
 
-fn convert_file(input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
+fn convert_file(ctx: &Context, input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
     let extension = input_path.extension().unwrap_or("");
 
     match extension {
-        "bin" => convert_bin_to_ritobin(input_path, output),
-        "py" | "ritobin" => convert_ritobin_to_bin(input_path, output),
+        "bin" => convert_bin_to_ritobin(ctx, input_path, output),
+        "py" | "rito" | "ritobin" => convert_ritobin_to_bin(input_path, output),
         _ => Err(miette::miette!(
-            "Unsupported input file extension: .{}. Supported extensions: .bin, .py, .ritobin",
+            "Unsupported input file extension: .{}. Supported extensions: .bin, .py, .rito, .ritobin",
             extension
         )),
     }
 }
 
-fn convert_bin_to_ritobin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
-    let (config, _) = load_or_create_config()?;
-
+fn convert_bin_to_ritobin(
+    ctx: &Context,
+    input_path: &Utf8Path,
+    output: Option<Utf8PathBuf>,
+) -> Result<()> {
     let file = File::open(input_path)
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to open input file: {}", input_path))?;
@@ -105,21 +108,19 @@ fn convert_bin_to_ritobin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
         .into_diagnostic()
         .wrap_err("Failed to parse .bin file")?;
 
-    let ritobin_text = if let Some(hashtable_dir) = config.hashtable_dir.as_ref() {
-        let mut hashtable_provider = HashMapProvider::new();
-        hashtable_provider.load_from_directory(hashtable_dir);
-
-        tree.print_with_config(PrintConfig::default().with_hashes(hashtable_provider))
-    } else {
-        tree.print_with_config(PrintConfig::default())
-    }
-    .into_diagnostic()
-    .wrap_err("Failed to convert to ritobin format")?;
+    let ritobin_text = tree
+        .print_with_config(
+            ctx.config
+                .print_config
+                .with_hashes(ctx.hash_provider.clone()),
+        )
+        .into_diagnostic()
+        .wrap_err("Failed to convert to ritobin format")?;
 
     let output_path = output.unwrap_or_else(|| {
         let stem = input_path.file_stem().unwrap_or("output");
         let parent = input_path.parent().unwrap_or(Utf8Path::new("."));
-        parent.join(format!("{}.py", stem))
+        parent.join(format!("{}.rito", stem))
     });
 
     let output_file = File::create(&output_path)
@@ -132,9 +133,11 @@ fn convert_bin_to_ritobin(input_path: &Utf8Path, output: Option<Utf8PathBuf>) ->
         .into_diagnostic()
         .wrap_err("Failed to write output file")?;
 
-    tracing::info!(
-        "Converted {} -> {}",
+    println!(
+        "{} {} {} {}",
+        "Converted".green(),
         hyperlink_path(input_path),
+        "->".green(),
         hyperlink_path(&output_path)
     );
 

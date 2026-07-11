@@ -1,6 +1,7 @@
 //! Application configuration management utilities.
 
 use camino::Utf8PathBuf;
+use ltk_ritobin::print::PrintConfig;
 use miette::Context;
 use miette::IntoDiagnostic;
 use miette::Result;
@@ -11,18 +12,12 @@ use std::io;
 use std::path::Path;
 
 /// Application-wide configuration stored in config.toml.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     /// Directory where ritobin hashtables are stored.
     pub hashtable_dir: Option<Utf8PathBuf>,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            hashtable_dir: default_hashtable_dir(),
-        }
-    }
+    #[serde(default)]
+    pub print_config: PrintConfig<()>,
 }
 
 /// Returns the directory where the current executable resides.
@@ -53,6 +48,7 @@ pub fn save_config(cfg: &AppConfig) -> io::Result<()> {
     if let Some(path) = default_config_path() {
         let normalized_cfg = AppConfig {
             hashtable_dir: cfg.hashtable_dir.as_ref().map(normalize_path),
+            print_config: cfg.print_config.clone(),
         };
 
         let content = toml::to_string_pretty(&normalized_cfg).map_err(io::Error::other)?;
@@ -128,27 +124,4 @@ pub fn save_config_table(table: &toml::Table) -> io::Result<()> {
             "Could not determine config path",
         ))
     }
-}
-
-/// Returns the default directory where wad hashtables should be looked up.
-/// Uses the user's Documents folder: Documents/LeagueToolkit/bin_hashtables
-/// Falls back to ~/.local/share/LeagueToolkit/bin_hashtables on Linux if Documents isn't available
-pub fn default_hashtable_dir() -> Option<Utf8PathBuf> {
-    // Try Documents folder first (Windows, macOS, and some Linux setups)
-    if let Some(doc_dir) =
-        directories_next::UserDirs::new().and_then(|u| u.document_dir().map(|p| p.to_path_buf()))
-    {
-        let mut path = doc_dir;
-        path.push("LeagueToolkit");
-        path.push("bin_hashtables");
-        if let Ok(utf8_path) = Utf8PathBuf::from_path_buf(path) {
-            return Some(utf8_path);
-        }
-    }
-
-    // Fallback: use data directory (~/.local/share on Linux, AppData on Windows)
-    let data_dirs = directories_next::ProjectDirs::from("", "", "LeagueToolkit")?;
-    let mut path = data_dirs.data_dir().to_path_buf();
-    path.push("bin_hashtables");
-    Utf8PathBuf::from_path_buf(path).ok()
 }

@@ -1,5 +1,7 @@
+use camino::Utf8PathBuf;
 use clap::builder::{Styles, styling::AnsiColor};
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use ltk_mimir_cache::HashStore;
 use miette::Result;
 use tracing::Level;
 use tracing_indicatif::IndicatifLayer;
@@ -9,9 +11,14 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{filter, fmt};
 
-use crate::commands::{config_cmd, convert, diff, download_hashes};
+use crate::{
+    commands::{config_cmd, convert, diff, download_hashes},
+    hashes::HashProvider,
+    utils::config::{AppConfig, load_or_create_config},
+};
 
 mod commands;
+mod hashes;
 mod utils;
 
 #[derive(Subcommand, Debug)]
@@ -121,7 +128,7 @@ pub enum Commands {
         action: ConfigAction,
     },
 
-    /// Download hashtable files from CommunityDragon
+    /// Download latest hashtable files from Mimir
     #[command(alias = "dl")]
     DownloadHashes,
 }
@@ -142,10 +149,32 @@ fn parse_args() -> Args {
     Args::from_arg_matches(&matches).expect("failed to parse arguments")
 }
 
+pub struct Context {
+    pub config: AppConfig,
+    pub config_path: Utf8PathBuf,
+    pub hash_store: Option<HashStore>,
+    pub hash_provider: HashProvider,
+}
+
 fn main() -> Result<()> {
     let _ = crate::commands::ensure_config_exists();
 
     let args = parse_args();
+
+    let (config, config_path) = load_or_create_config()?;
+
+    let hash_store = HashStore::discover()
+        .inspect_err(|e| tracing::error!("Failed to discover Mimir hashes - {e}"))
+        .ok();
+
+    let hash_provider = HashProvider::new(config.hashtable_dir.as_ref(), hash_store.as_ref());
+
+    let ctx = Context {
+        config,
+        config_path,
+        hash_store,
+        hash_provider,
+    };
 
     initialize_tracing(args.verbosity, false)?;
 
@@ -154,19 +183,19 @@ fn main() -> Result<()> {
             input,
             output,
             recursive,
-        } => convert::convert(input, output, recursive),
+        } => convert::convert(ctx, input, output, recursive),
         Commands::Diff {
             file1,
             file2,
             context,
             no_color,
-        } => diff::diff(file1, file2, context, no_color),
+        } => diff::diff(ctx, file1, file2, context, no_color),
         Commands::Config { action } => match action {
             ConfigAction::Show => config_cmd::show_config(),
             ConfigAction::Set { key, value } => config_cmd::set_config_value(&key, &value),
             ConfigAction::Reset => config_cmd::reset_config(),
         },
-        Commands::DownloadHashes => download_hashes::download_hashes(),
+        Commands::DownloadHashes => download_hashes::download_hashes(&ctx),
     }
 }
 
