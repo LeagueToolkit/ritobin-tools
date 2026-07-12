@@ -81,7 +81,11 @@ fn convert_directory(ctx: Context, dir_path: &Utf8Path, recursive: bool) -> Resu
     }
 }
 
-fn convert_file(ctx: &Context, input_path: &Utf8Path, output: Option<Utf8PathBuf>) -> Result<()> {
+pub fn convert_file(
+    ctx: &Context,
+    input_path: &Utf8Path,
+    output: Option<Utf8PathBuf>,
+) -> Result<()> {
     let extension = input_path.extension().unwrap_or("");
 
     match extension {
