@@ -38,9 +38,9 @@ csv = "1.3.1"
 convert_case = "0.11"
 similar = "3"
 
-ltk_ritobin = { git = "https://github.com/LeagueToolkit/league-toolkit.git", branch = "fix/ritobin-hashprovider", features = ["serde"] }
-ltk_meta = { git = "https://github.com/LeagueToolkit/league-toolkit.git", branch = "fix/ritobin-hashprovider" }
-ltk_hash = { git = "https://github.com/LeagueToolkit/league-toolkit.git", branch = "fix/ritobin-hashprovider" }
+ltk_ritobin = { git = "https://github.com/LeagueToolkit/league-toolkit.git", features = ["serde"] }
+ltk_meta = { git = "https://github.com/LeagueToolkit/league-toolkit.git" }
+ltk_hash = { git = "https://github.com/LeagueToolkit/league-toolkit.git" }
 
 ltk_mimir_cache = { git = "https://github.com/LeagueToolkit/Mimir.git" }
 ltk_hashdb = { git = "https://github.com/LeagueToolkit/Mimir.git" }

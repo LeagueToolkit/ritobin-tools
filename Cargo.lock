@@ -1272,7 +1272,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "ltk_hash"
 version = "0.3.0"
-source = "git+https://github.com/LeagueToolkit/league-toolkit.git?branch=fix%2Fritobin-hashprovider#6e9a7034f1922a68a445f4e297b2cf2b6e135eab"
+source = "git+https://github.com/LeagueToolkit/league-toolkit.git#1a26c3a73f1ab2f56a5f90c6ab5612ddf0065e2d"
 dependencies = [
  "byteorder",
  "serde",
@@ -1294,7 +1294,7 @@ dependencies = [
 [[package]]
 name = "ltk_io_ext"
 version = "0.4.3"
-source = "git+https://github.com/LeagueToolkit/league-toolkit.git?branch=fix%2Fritobin-hashprovider#6e9a7034f1922a68a445f4e297b2cf2b6e135eab"
+source = "git+https://github.com/LeagueToolkit/league-toolkit.git#1a26c3a73f1ab2f56a5f90c6ab5612ddf0065e2d"
 dependencies = [
  "byteorder",
  "glam",
@@ -1305,7 +1305,7 @@ dependencies = [
 [[package]]
 name = "ltk_meta"
 version = "0.6.0"
-source = "git+https://github.com/LeagueToolkit/league-toolkit.git?branch=fix%2Fritobin-hashprovider#6e9a7034f1922a68a445f4e297b2cf2b6e135eab"
+source = "git+https://github.com/LeagueToolkit/league-toolkit.git#1a26c3a73f1ab2f56a5f90c6ab5612ddf0065e2d"
 dependencies = [
  "byteorder",
  "enum_dispatch",
@@ -1339,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "ltk_primitives"
 version = "0.3.4"
-source = "git+https://github.com/LeagueToolkit/league-toolkit.git?branch=fix%2Fritobin-hashprovider#6e9a7034f1922a68a445f4e297b2cf2b6e135eab"
+source = "git+https://github.com/LeagueToolkit/league-toolkit.git#1a26c3a73f1ab2f56a5f90c6ab5612ddf0065e2d"
 dependencies = [
  "byteorder",
  "glam",
@@ -1350,7 +1350,7 @@ dependencies = [
 [[package]]
 name = "ltk_ritobin"
 version = "0.4.0"
-source = "git+https://github.com/LeagueToolkit/league-toolkit.git?branch=fix%2Fritobin-hashprovider#6e9a7034f1922a68a445f4e297b2cf2b6e135eab"
+source = "git+https://github.com/LeagueToolkit/league-toolkit.git#1a26c3a73f1ab2f56a5f90c6ab5612ddf0065e2d"
 dependencies = [
  "glam",
  "indexmap",
