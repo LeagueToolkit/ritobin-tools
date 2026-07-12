@@ -3,21 +3,27 @@ use std::io::{BufReader, Read};
 
 use camino::Utf8Path;
 use colored::Colorize;
-use ltk_meta::BinTree;
-use ltk_ritobin::{HashMapProvider, HexHashProvider, WriterConfig};
+use ltk_meta::Bin as BinTree;
+use ltk_ritobin::{HashMapProvider, Print as _, print::PrintConfig};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use similar::{ChangeTag, TextDiff};
 
-use crate::utils::config::load_or_create_config;
+use crate::{Context, utils::config::load_or_create_config};
 
 /// Supported file extensions for diffing
-const SUPPORTED_EXTENSIONS: &[&str] = &["bin", "py", "ritobin"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["bin", "py", "rito", "ritobin"];
 
 /// Diff two .bin or .ritobin files against each other.
 ///
 /// Both files are converted to the ritobin text format internally,
 /// and a unified diff is displayed showing the differences.
-pub fn diff(file1: String, file2: String, context_lines: usize, no_color: bool) -> Result<()> {
+pub fn diff(
+    ctx: Context,
+    file1: String,
+    file2: String,
+    context_lines: usize,
+    no_color: bool,
+) -> Result<()> {
     let path1 = Utf8Path::new(&file1);
     let path2 = Utf8Path::new(&file2);
 
@@ -29,8 +35,8 @@ pub fn diff(file1: String, file2: String, context_lines: usize, no_color: bool) 
     let (config, _) = load_or_create_config()?;
 
     // Convert both files to ritobin text format
-    let text1 = file_to_ritobin_text(path1, &config)?;
-    let text2 = file_to_ritobin_text(path2, &config)?;
+    let text1 = file_to_ritobin_text(&ctx, path1, &config)?;
+    let text2 = file_to_ritobin_text(&ctx, path2, &config)?;
 
     // Compute and display the diff
     display_diff(&text1, &text2, path1, path2, context_lines, no_color);
@@ -43,7 +49,7 @@ fn validate_extension(path: &Utf8Path) -> Result<()> {
     let extension = path.extension().unwrap_or("");
     if !SUPPORTED_EXTENSIONS.contains(&extension) {
         return Err(miette::miette!(
-            "Unsupported file extension: .{}. Supported extensions: .bin, .py, .ritobin",
+            "Unsupported file extension: .{}. Supported extensions: .bin, .py, .rito, .ritobin",
             extension
         ));
     }
@@ -52,6 +58,7 @@ fn validate_extension(path: &Utf8Path) -> Result<()> {
 
 /// Load a file and convert it to ritobin text format
 fn file_to_ritobin_text(
+    ctx: &Context,
     path: &Utf8Path,
     config: &crate::utils::config::AppConfig,
 ) -> Result<String> {
@@ -60,28 +67,15 @@ fn file_to_ritobin_text(
     match extension {
         "bin" => {
             let tree = load_bin_file(path)?;
-            let ritobin_text = if let Some(hashtable_dir) = config.hashtable_dir.as_ref() {
-                let mut hashtable_provider = HashMapProvider::new();
-                hashtable_provider.load_from_directory(hashtable_dir);
 
-                ltk_ritobin::write_with_config_and_hashes(
-                    &tree,
-                    WriterConfig::default(),
-                    &hashtable_provider,
-                )
-            } else {
-                ltk_ritobin::write_with_config_and_hashes(
-                    &tree,
-                    WriterConfig::default(),
-                    &HexHashProvider,
-                )
-            }
-            .into_diagnostic()
-            .wrap_err_with(|| format!("Failed to convert {} to ritobin format", path))?;
+            let ritobin_text = tree
+                .print_with_config(config.print_config.with_hashes(ctx.hash_provider.clone()))
+                .into_diagnostic()
+                .wrap_err_with(|| format!("Failed to convert {} to ritobin format", path))?;
 
             Ok(ritobin_text)
         }
-        "py" | "ritobin" => read_text_file(path),
+        "py" | "rito" | "ritobin" => read_text_file(path),
         _ => Err(miette::miette!(
             "Unsupported file extension: .{}",
             extension

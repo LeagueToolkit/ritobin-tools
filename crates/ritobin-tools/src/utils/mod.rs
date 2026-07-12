@@ -1,6 +1,7 @@
 pub mod config;
 
 use camino::Utf8Path;
+use colored::Colorize;
 use fancy_regex::Regex;
 use miette::Result;
 
@@ -10,6 +11,8 @@ pub fn hyperlink_path(path: impl AsRef<Utf8Path>) -> String {
     let path = path.as_ref();
     let url = format!("file://{}", path.as_str().replace('\\', "/"));
     format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, path)
+        .blue()
+        .to_string()
 }
 
 /// Creates a filter pattern from an optional regex string.
