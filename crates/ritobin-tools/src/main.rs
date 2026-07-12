@@ -1,8 +1,10 @@
-use camino::Utf8PathBuf;
+use std::ffi::OsString;
+
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::builder::{Styles, styling::AnsiColor};
 use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use ltk_mimir_cache::HashStore;
-use miette::Result;
+use miette::{IntoDiagnostic, Result, miette};
 use tracing::Level;
 use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::filter::LevelFilter;
@@ -36,13 +38,14 @@ pub enum ConfigAction {
     Reset,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Default, Copy, Clone, Debug, ValueEnum)]
 pub enum VerbosityLevel {
     /// Show errors and above
     Error,
     /// Show warnings and above
     Warning,
     /// Show info messages and above
+    #[default]
     Info,
     /// Show debug messages and above
     Debug,
@@ -133,7 +136,7 @@ pub enum Commands {
     DownloadHashes,
 }
 
-fn parse_args() -> Args {
+fn parse_args() -> Result<Args, clap::Error> {
     // Configure colored/styled help output
     let styles = Styles::styled()
         .header(AnsiColor::Yellow.on_default().bold())
@@ -144,9 +147,9 @@ fn parse_args() -> Args {
     let matches = Args::command()
         .styles(styles)
         .color(ColorChoice::Auto)
-        .get_matches();
+        .try_get_matches()?;
 
-    Args::from_arg_matches(&matches).expect("failed to parse arguments")
+    Args::from_arg_matches(&matches)
 }
 
 pub struct Context {
@@ -157,8 +160,6 @@ pub struct Context {
 }
 
 fn main() -> Result<()> {
-    let _ = crate::commands::ensure_config_exists();
-
     let args = parse_args();
 
     let (config, config_path) = load_or_create_config()?;
@@ -176,26 +177,54 @@ fn main() -> Result<()> {
         hash_provider,
     };
 
-    initialize_tracing(args.verbosity, false)?;
+    initialize_tracing(
+        args.as_ref().map(|a| a.verbosity).unwrap_or_default(),
+        false,
+    )?;
 
-    match args.command {
-        Commands::Convert {
-            input,
-            output,
-            recursive,
-        } => convert::convert(ctx, input, output, recursive),
-        Commands::Diff {
-            file1,
-            file2,
-            context,
-            no_color,
-        } => diff::diff(ctx, file1, file2, context, no_color),
-        Commands::Config { action } => match action {
-            ConfigAction::Show => config_cmd::show_config(),
-            ConfigAction::Set { key, value } => config_cmd::set_config_value(&key, &value),
-            ConfigAction::Reset => config_cmd::reset_config(),
+    match args {
+        Ok(args) => match args.command {
+            Commands::Convert {
+                input,
+                output,
+                recursive,
+            } => convert::convert(ctx, input, output, recursive),
+            Commands::Diff {
+                file1,
+                file2,
+                context,
+                no_color,
+            } => diff::diff(ctx, file1, file2, context, no_color),
+            Commands::Config { action } => match action {
+                ConfigAction::Show => config_cmd::show_config(),
+                ConfigAction::Set { key, value } => config_cmd::set_config_value(&key, &value),
+                ConfigAction::Reset => config_cmd::reset_config(),
+            },
+            Commands::DownloadHashes => download_hashes::download_hashes(&ctx),
         },
-        Commands::DownloadHashes => download_hashes::download_hashes(&ctx),
+        Err(e) => {
+            let mut raw_args = std::env::args_os().skip(1);
+
+            let process = |arg: OsString| {
+                let path = Utf8PathBuf::from_os_string(arg)
+                    .map_err(|p| miette!("File path {p:?} is not valid UTF-8!"))?;
+                if !path.exists() {
+                    miette::bail!("Invalid file {path:?}!");
+                }
+                convert::convert_file(&ctx, &path, None)?;
+                Ok(())
+            };
+
+            // if first arg failed to convert, then it probably wasn't a drag and drop
+            if raw_args.next().and_then(|arg| process(arg).ok()).is_none() {
+                e.exit();
+            }
+
+            for arg in raw_args {
+                process(arg)?;
+            }
+            Ok(())
+        }
     }
 }
 

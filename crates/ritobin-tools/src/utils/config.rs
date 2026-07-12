@@ -48,7 +48,7 @@ pub fn save_config(cfg: &AppConfig) -> io::Result<()> {
     if let Some(path) = default_config_path() {
         let normalized_cfg = AppConfig {
             hashtable_dir: cfg.hashtable_dir.as_ref().map(normalize_path),
-            print_config: cfg.print_config.clone(),
+            print_config: cfg.print_config,
         };
 
         let content = toml::to_string_pretty(&normalized_cfg).map_err(io::Error::other)?;
