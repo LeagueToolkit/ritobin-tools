@@ -1,4 +1,4 @@
-use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
 use indexmap::IndexMap;
 use ltk_game_data::{EntryName, FieldNames, Reference, Value};
@@ -207,11 +207,13 @@ fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
 fn output_name(bin: &EditedBin, game: &Game) -> Utf8PathBuf {
     let hash_name = format!("{:016x}", bin.chunk.0);
     let is_hash = |name: &str| name.eq_ignore_ascii_case(&hash_name);
+    // Read as text, not as a path of this platform, so the tree written is the same on each: a
+    // drive letter or a backslash is refused on Linux too.
     let relative = |name: &str| {
         !is_hash(name)
-            && Utf8Path::new(name)
-                .components()
-                .all(|part| matches!(part, Utf8Component::Normal(_)))
+            && name.split('/').all(|segment| {
+                !matches!(segment, "" | "." | "..") && !segment.contains([':', '\\'])
+            })
     };
 
     let named = game.chunk_name(bin.chunk);
@@ -470,7 +472,12 @@ mod tests {
         );
 
         // A target that would be written outside the output directory.
-        for target in ["../outside.bin", "/root.bin", "C:/drive.bin"] {
+        for target in [
+            "../outside.bin",
+            "/root.bin",
+            "C:/drive.bin",
+            "data\\..\\..\\outside.bin",
+        ] {
             let name = output_name(&edited(target, target), &game);
             assert_eq!(
                 name,
