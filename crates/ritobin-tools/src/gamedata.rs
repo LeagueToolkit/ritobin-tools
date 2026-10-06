@@ -89,13 +89,13 @@ impl Layer {
         Ok(Self { dir, declarations })
     }
 
-    /// The bytes of the layer's file at the layer-relative `path`.
+    /// Reads the layer's file at the layer-relative `path`.
     fn read(&self, path: &str) -> Result<Vec<u8>, String> {
         read_inside(&self.dir, path)
     }
 }
 
-/// The one manifest in the layer directory `dir`.
+/// Finds the manifest of the layer directory `dir`, which must hold exactly one.
 fn manifest_in(dir: &Utf8Path) -> Result<String> {
     let found: Vec<&str> = MANIFEST_NAMES
         .into_iter()
@@ -302,7 +302,7 @@ pub fn apply(layer: &Layer, game: &Game) -> Result<Outcome> {
     Ok(outcome)
 }
 
-/// The chunks `module` edits, each with its edits. An entry no chunk declares is a problem.
+/// Lowers the `module` representation into a deterministic program.
 fn lower(
     index: usize,
     module: &Module,
@@ -371,7 +371,7 @@ fn lower(
     }
 }
 
-/// The code a value of `ltk_game_data` serializes as.
+/// Returns the code a value of `ltk_game_data` serializes as.
 fn code(value: &impl Serialize) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(code)) => code,
@@ -379,7 +379,7 @@ fn code(value: &impl Serialize) -> String {
     }
 }
 
-/// Why the property, record or object edit of `diagnostic` was skipped.
+/// Returns why the property, record or object edit of `diagnostic` was skipped.
 fn reason(diagnostic: &ApplyDiagnostic) -> Option<String> {
     if let Some(property) = &diagnostic.property {
         return Some(code(&property.reason));
@@ -405,7 +405,7 @@ mod tests {
         game::testing::Installation,
     };
 
-    /// FNV-1a of the lowercased name, which is how a manifest's names reach a bin.
+    /// Hashes `name` the way a manifest's names reach a bin: FNV-1a of the lowercased name.
     fn hash(name: &str) -> BinHash {
         BinHash(
             name.to_ascii_lowercase()
@@ -416,7 +416,7 @@ mod tests {
         )
     }
 
-    /// A bin with one object named `entry` that has a `size` and a `tags` list.
+    /// Builds a bin with one object named `entry` that has a `size` and a `tags` list.
     fn skin(entry: &str, size: f32) -> Vec<u8> {
         let bin: BinFile = Bin::builder()
             .dependency("shared.bin")

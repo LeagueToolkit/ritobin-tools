@@ -47,7 +47,7 @@ pub struct GameArgs {
 }
 
 impl GameArgs {
-    /// The game directory, from the flag or the config.
+    /// Returns the game directory, from the flag or the config.
     fn dir<'a>(&'a self, ctx: &'a Context) -> Option<&'a Utf8Path> {
         self.game_dir.as_deref().or(ctx.config.game_dir.as_deref())
     }
@@ -131,7 +131,8 @@ pub struct RenderArgs {
     pub keep_hashed: bool,
 }
 
-/// Runs a `gamedata` command. `false` when a manifest was applied and part of it did not apply.
+/// Runs a `gamedata` command. Returns `false` when a manifest was applied and part of it did not
+/// apply.
 pub fn run(ctx: &Context, command: GameDataCommand) -> Result<bool> {
     match command {
         GameDataCommand::Check(args) => check(ctx, &args),
@@ -202,8 +203,8 @@ fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
     Ok(summarize(&outcome, &modules, "changed"))
 }
 
-/// Where an edited bin goes under the output directory: its path in the game, or its chunk hash
-/// when the path is not known or is not one to write to.
+/// Chooses where an edited bin goes under the output directory: its path in the game, or its
+/// chunk hash when the path is not known or is not one to write to.
 fn output_name(bin: &EditedBin, game: &Game) -> Utf8PathBuf {
     let hash_name = format!("{:016x}", bin.chunk.0);
     let is_hash = |name: &str| name.eq_ignore_ascii_case(&hash_name);
@@ -311,7 +312,7 @@ fn report(outcome: &Outcome, format: OutputFormat) -> Result<()> {
     write_bytes(STDIO.into(), out.as_bytes())
 }
 
-/// Logs what an application came to. `false` when part of the manifest did not apply.
+/// Logs what an application came to. Returns `false` when part of the manifest did not apply.
 fn summarize(outcome: &Outcome, modules: &str, changed: &str) -> bool {
     let edited = outcome.bins.iter().filter(|bin| bin.changes.any()).count();
     for bin in outcome.bins.iter().filter(|bin| !bin.changes.any()) {
@@ -394,7 +395,7 @@ fn render(ctx: &Context, args: &RenderArgs) -> Result<()> {
     write_bytes(STDIO.into(), text.as_bytes())
 }
 
-/// The object `hash` of the bin or ritobin text file at `path`.
+/// Reads the object `hash` of the bin or ritobin text file at `path`.
 fn object_of(path: &Utf8Path, hash: BinHash) -> Result<Option<BinObject>> {
     let document = Document::read(path, ReadOptions::default())?;
     let objects = match document.file {
@@ -404,7 +405,8 @@ fn object_of(path: &Utf8Path, hash: BinHash) -> Result<Option<BinObject>> {
     Ok(objects.get(&hash).cloned())
 }
 
-/// Every property of `object` as the body a manifest gives an entry: one key for each property.
+/// Renders every property of `object` as the body a manifest gives an entry: one key for each
+/// property.
 fn entry_body(object: &BinObject, names: &GameNames) -> Result<Value, ltk_game_data::Error> {
     let mut body = IndexMap::new();
     for (field, value) in &object.properties {

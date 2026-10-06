@@ -92,15 +92,15 @@ impl Game {
         &self.dir
     }
 
-    /// The path of `chunk` when the hashtables have it, else its hash as 16 hex digits.
+    /// Returns the path of `chunk` when the hashtables have it, else its hash as 16 hex digits.
     pub fn chunk_name(&self, chunk: WadHash) -> String {
         self.paths
             .path(chunk)
             .unwrap_or_else(|| format!("{:016x}", chunk.0))
     }
 
-    /// The game's copy of `chunk`: the one in the first archive that holds it. `None` for a
-    /// chunk no archive holds.
+    /// Reads the game's copy of `chunk`: the one in the first archive that holds it. Returns
+    /// `None` for a chunk no archive holds.
     pub fn chunk(&self, chunk: WadHash) -> Result<Option<Vec<u8>>> {
         match self.index.row(chunk) {
             Some(row) => self.read(row.first_holder(), chunk).map(Some),
@@ -138,7 +138,7 @@ impl Game {
         Ok(data.into_vec())
     }
 
-    /// Every bin object of the game with the chunks that declare it.
+    /// Returns the index of every bin object of the game with the chunks that declare it.
     ///
     /// The first call reads the cached index, or reads every bin of the game to build it.
     pub fn objects(&self) -> &ObjectIndex {
@@ -176,7 +176,7 @@ impl Game {
         })
     }
 
-    /// The chunks that declare `object`, in archive order, each one once.
+    /// Lists the chunks that declare `object`, in archive order, each one once.
     pub fn declaring_chunks(&self, object: BinHash) -> Vec<WadHash> {
         let mut chunks = Vec::new();
         for declaration in self.objects().declarations(object) {
@@ -187,8 +187,8 @@ impl Game {
         chunks
     }
 
-    /// The game's copy of `object`: the one in the first chunk that declares it. `None` for an
-    /// object no chunk declares.
+    /// Reads the game's copy of `object`: the one in the first chunk that declares it. Returns
+    /// `None` for an object no chunk declares.
     pub fn object(&self, object: BinHash) -> Result<Option<BinObject>> {
         let Some(declaration) = self.objects().declarations(object).first() else {
             return Ok(None);
@@ -221,8 +221,8 @@ impl Game {
     }
 }
 
-/// The game directory `dir` names: itself, or the `Game` directory in it when `dir` is the
-/// directory of the whole installation.
+/// Resolves the game directory `dir` names: itself, or the `Game` directory in it when `dir` is
+/// the directory of the whole installation.
 fn game_dir(dir: &Utf8Path) -> Utf8PathBuf {
     let nested = dir.join("Game");
     match !dir.join(ARCHIVES_DIR).is_dir() && nested.join(ARCHIVES_DIR).is_dir() {
@@ -231,8 +231,8 @@ fn game_dir(dir: &Utf8Path) -> Utf8PathBuf {
     }
 }
 
-/// Where the indexes of the game at `dir` are cached: a directory of its own, next to the
-/// hashtable cache every LeagueToolkit tool shares.
+/// Returns where the indexes of the game at `dir` are cached: a directory of its own, next to
+/// the hashtable cache every LeagueToolkit tool shares.
 fn default_index_dir(dir: &Utf8Path) -> Result<Utf8PathBuf> {
     let base = directories::BaseDirs::new().ok_or_else(|| {
         miette::miette!("Could not find the user data directory; pass --index-dir")
@@ -307,7 +307,7 @@ pub mod testing {
             std::fs::write(path, out.into_inner()).unwrap();
         }
 
-        /// The game, with its indexes cached inside the installation.
+        /// Opens the game, with its indexes cached inside the installation.
         pub fn open(&self) -> Game {
             Game::open(
                 &self.root,
