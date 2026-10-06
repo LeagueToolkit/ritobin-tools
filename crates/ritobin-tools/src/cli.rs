@@ -1,4 +1,5 @@
-//! The command line: global options, the subcommands and how arguments are parsed.
+//! Defines the command line interface: the global options, the subcommands and the argument
+//! parsing.
 
 use std::ffi::{OsStr, OsString};
 
@@ -42,12 +43,14 @@ pub struct Cli {
     #[arg(long, value_name = "FILE", global = true, help_heading = GLOBAL_OPTIONS)]
     pub config: Option<Utf8PathBuf>,
 
-    /// Hashtable cache directory. Overrides the config value, `MIMIR_DIR` and the shared default
+    /// Hashtable cache directory. Overrides the config value, `MIMIR_DIR` and the default
+    /// shared directory
     #[arg(long, value_name = "DIR", global = true, help_heading = GLOBAL_OPTIONS)]
     pub hashtable_dir: Option<Utf8PathBuf>,
 
-    /// Directory of extra CDragon text hashtables (`hashes.binentries.txt`, `hashes.binfields.txt`,
-    /// `hashes.binhashes.txt`, `hashes.bintypes.txt`). Its names win over the cache
+    /// Directory of additional CDragon text hashtables (`hashes.binentries.txt`,
+    /// `hashes.binfields.txt`, `hashes.binhashes.txt`, `hashes.bintypes.txt`). A name from this
+    /// directory takes precedence over the cache
     #[arg(
         short = 'H',
         long,
@@ -57,8 +60,8 @@ pub struct Cli {
     )]
     pub hashtable: Option<Utf8PathBuf>,
 
-    /// Wait for Enter before exiting. The Explorer menu and files dropped on the executable set
-    /// it, because the console window they open closes when the run ends
+    /// Wait for Enter before exiting. The Explorer menu entries and the drag-and-drop launch
+    /// set this option, because Explorer runs the tool in a console window that closes on exit
     #[arg(
         long,
         value_enum,
@@ -78,7 +81,7 @@ pub enum Commands {
     /// Convert between .bin (binary) and .rito (text)
     Convert(ConvertArgs),
 
-    /// Show the difference between two bins, and save it as a PTCH patch
+    /// Show the difference between two bins, and optionally save it as a PTCH patch
     Diff(DiffArgs),
 
     /// Manage and query the hashtables
@@ -108,7 +111,7 @@ pub enum Commands {
         command: GameDataCommand,
     },
 
-    /// Manage the Windows Explorer right-click menu
+    /// Manage the Windows Explorer context menu
     #[cfg(windows)]
     Shell {
         #[command(subcommand)]
@@ -116,18 +119,21 @@ pub enum Commands {
     },
 }
 
-/// When a run waits for Enter before it exits.
+/// Selects when the tool waits for Enter before it exits.
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum PauseMode {
+    /// Do not wait
     #[default]
     Never,
-    /// Only after a run that failed
+    /// Wait only if the command failed
     OnError,
+    /// Always wait
     Always,
 }
 
 impl PauseMode {
-    /// Whether a run that `failed` or did not waits.
+    /// Returns `true` if the tool waits before it exits. `failed` is `true` if the command
+    /// failed.
     pub fn applies(self, failed: bool) -> bool {
         match self {
             PauseMode::Never => false,
@@ -152,7 +158,7 @@ pub enum VerbosityLevel {
     Trace,
 }
 
-/// The flags that lay out ritobin text. Each overrides its `[print_config]` value for one run.
+/// The text layout flags. Each flag overrides the matching `[print_config]` value for one run.
 #[derive(Args, Debug, Clone, Copy, Default)]
 #[command(next_help_heading = LAYOUT_OPTIONS)]
 pub struct LayoutArgs {
@@ -160,11 +166,12 @@ pub struct LayoutArgs {
     #[arg(long, value_name = "N")]
     pub indent_size: Option<usize>,
 
-    /// Line width past which a block is broken over several lines, from 40 to 200
+    /// Maximum line width, from 40 to 200. A block that exceeds it is printed on several lines
     #[arg(long, value_name = "N", value_parser = line_width)]
     pub line_width: Option<usize>,
 
-    /// Print a struct that fits on one line on one line. `--inline-structs=false` turns it off
+    /// Print a struct on one line if it fits within the line width. Pass
+    /// `--inline-structs=false` to disable
     #[arg(
         long,
         value_name = "BOOL",
@@ -175,6 +182,8 @@ pub struct LayoutArgs {
     pub inline_structs: Option<bool>,
 }
 
+/// Parses a line width. Fails if the value is not a number from [`MIN_LINE_WIDTH`] to
+/// [`MAX_LINE_WIDTH`].
 fn line_width(text: &str) -> Result<usize, String> {
     match text.parse() {
         Ok(width) if (MIN_LINE_WIDTH..=MAX_LINE_WIDTH).contains(&width) => Ok(width),
@@ -185,7 +194,7 @@ fn line_width(text: &str) -> Result<usize, String> {
 }
 
 impl LayoutArgs {
-    /// `layout` with every flag that was given laid over it.
+    /// Returns `layout` with each field replaced by the value of its flag, if the flag is set.
     pub fn over(&self, layout: TextLayout) -> TextLayout {
         TextLayout {
             indent_size: self.indent_size.unwrap_or(layout.indent_size),
@@ -196,6 +205,7 @@ impl LayoutArgs {
     }
 }
 
+/// Returns the colors of the help output.
 fn styles() -> Styles {
     Styles::styled()
         .header(AnsiColor::Yellow.on_default().bold())
@@ -204,6 +214,7 @@ fn styles() -> Styles {
         .placeholder(AnsiColor::Blue.on_default())
 }
 
+/// Parses `args` as a command line. The first item is the program name.
 pub fn try_parse(args: impl IntoIterator<Item = OsString>) -> Result<Cli, clap::Error> {
     let matches = Cli::command()
         .styles(styles())
@@ -212,10 +223,10 @@ pub fn try_parse(args: impl IntoIterator<Item = OsString>) -> Result<Cli, clap::
     Cli::from_arg_matches(&matches)
 }
 
-/// Parses the process arguments, exiting with usage on a mistake.
+/// Parses the process arguments. Prints the usage error and exits if they are invalid.
 ///
-/// Arguments that are nothing but existing paths are files dropped on the executable, and are
-/// converted.
+/// If parsing fails and every argument is an existing path, the arguments are treated as files
+/// dropped on the executable and are parsed as a `convert` command.
 pub fn parse() -> Cli {
     let args: Vec<OsString> = std::env::args_os().collect();
     match try_parse(args.clone()) {
@@ -227,12 +238,14 @@ pub fn parse() -> Cli {
     }
 }
 
-/// `args` as a `convert` run of them, if every argument is an existing path.
+/// Returns `args` rewritten as a `convert` command with `--pause on-error`, if every argument is
+/// an existing path. Otherwise returns `None`.
 ///
-/// The run waits for Enter when it fails: a drop opens a console window that closes with the run.
+/// `--pause on-error` is added because Explorer runs a dropped file in a console window that
+/// closes on exit.
 ///
-/// A first argument that is the name of a subcommand is never a dropped file, even when a file or
-/// directory of that name exists.
+/// Returns `None` if the first argument is the name of a subcommand, even if a file or directory
+/// with that name exists.
 fn dropped_files(args: &[OsString]) -> Option<Vec<OsString>> {
     let (program, paths) = args.split_first()?;
     let all_paths = !is_subcommand(paths.first()?)
@@ -246,7 +259,7 @@ fn dropped_files(args: &[OsString]) -> Option<Vec<OsString>> {
     })
 }
 
-/// Whether `name` is a subcommand or one of its aliases.
+/// Returns `true` if `name` is the name or an alias of a subcommand.
 fn is_subcommand(name: &OsStr) -> bool {
     Cli::command().get_subcommands().any(|subcommand| {
         subcommand.get_name() == name || subcommand.get_all_aliases().any(|alias| alias == name)
@@ -258,12 +271,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_command_definition_is_consistent() {
+    fn command_definition_passes_debug_assert() {
         Cli::command().debug_assert();
     }
 
     #[test]
-    fn layout_flags_override_only_what_they_name() {
+    fn layout_flags_override_only_set_fields() {
         let args = LayoutArgs {
             indent_size: Some(2),
             inline_structs: Some(true),
@@ -280,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_paths_alone_are_dropped_files() {
+    fn dropped_files_rewrites_existing_paths_to_convert() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("skin0.bin");
         std::fs::write(&file, b"").unwrap();
@@ -307,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_waits_only_when_its_pause_mode_says_so() {
+    fn pause_mode_applies_by_mode_and_failure() {
         assert!(!PauseMode::Never.applies(true));
         assert!(!PauseMode::OnError.applies(false));
         assert!(PauseMode::OnError.applies(true));
@@ -315,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subcommand_name_is_not_a_dropped_file() {
+    fn dropped_files_ignores_subcommand_names() {
         for name in [
             "convert",
             "diff",
@@ -331,13 +344,13 @@ mod tests {
         }
         assert!(!is_subcommand(OsStr::new("skin0.bin")));
 
-        // `.` always exists, as a directory named after a subcommand could.
+        // `.` is an existing path, like a directory that has the name of a subcommand.
         let args = ["ritobin-tools", "hashes", "."].map(OsString::from);
         assert_eq!(dropped_files(&args), None);
     }
 
     #[test]
-    fn an_inline_flag_does_not_take_the_next_argument_as_its_value() {
+    fn inline_structs_flag_requires_equals_for_a_value() {
         let cli = try_parse(
             ["ritobin-tools", "convert", "--inline-structs", "skin0.bin"].map(OsString::from),
         )
@@ -365,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_width_outside_the_printer_bounds_is_refused() {
+    fn line_width_outside_bounds_fails_to_parse() {
         let parse = |width: &str| {
             try_parse(
                 [
@@ -384,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_path_is_not_a_dropped_file() {
+    fn dropped_files_ignores_missing_paths() {
         let args = vec![
             OsString::from("ritobin-tools"),
             OsString::from("no-such-subcommand"),

@@ -14,20 +14,21 @@ pub enum ConfigCommand {
     Show,
     /// Set a configuration value
     Set {
-        /// The key to set, with `.` between tables (e.g. `hashtable_dir`, `print_config.indent_size`)
+        /// Key to set. Nested keys are separated with `.` (e.g. `hashtable_dir`,
+        /// `print_config.indent_size`)
         key: String,
-        /// The value to give it
+        /// New value
         value: String,
     },
     /// Reset the configuration to its defaults
     Reset,
 }
 
+/// Runs a `config` command.
 pub fn run(ctx: &Context, command: ConfigCommand) -> Result<()> {
-    let path = ctx
-        .config_path
-        .as_deref()
-        .ok_or_else(|| miette::miette!("Could not tell where the config file is; pass --config"))?;
+    let path = ctx.config_path.as_deref().ok_or_else(|| {
+        miette::miette!("Failed to determine the config file path. Pass --config")
+    })?;
     match command {
         ConfigCommand::Show => show(ctx, path),
         ConfigCommand::Set { key, value } => set(path, &key, &value),
@@ -35,10 +36,11 @@ pub fn run(ctx: &Context, command: ConfigCommand) -> Result<()> {
     }
 }
 
+/// Prints the config file path and the current configuration.
 fn show(ctx: &Context, path: &Utf8Path) -> Result<()> {
     let existence = match path.exists() {
         true => "",
-        false => " (not created yet, showing the defaults)",
+        false => " (file does not exist, showing the default values)",
     };
     println!("{} {path}{existence}", "config_file:".bright_white());
     println!();
@@ -59,22 +61,24 @@ fn show(ctx: &Context, path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
+/// Sets `key` to `value` in the config file at `path`. Fails without writing the file if the
+/// key is unknown or the value has the wrong type.
 fn set(path: &Utf8Path, key: &str, value: &str) -> Result<()> {
     let mut table = config::load_table(path)?;
     insert(&mut table, key, parse_value(value))?;
 
-    // The table has to still be a config before it replaces the file.
+    // Validate the edited table by deserializing it as a config before the file is written.
     let config: AppConfig = table
         .try_into()
         .map_err(|error| miette::miette!("`{key}` cannot be set to `{value}`: {error}"))?;
-    // A key the config does not have is dropped when the table is read, so it is not there when
-    // the config is written back out.
+    // Deserialization ignores unknown keys. The config is serialized again and checked for the
+    // key, which detects an unknown key.
     let written = toml::Table::try_from(&config)
         .into_diagnostic()
         .wrap_err("Failed to serialize the config")?;
     if !contains(&written, key) {
         miette::bail!(
-            "`{key}` is not a config key. `ritobin-tools config show` lists the keys there are"
+            "`{key}` is not a config key. Run `ritobin-tools config show` to list the valid keys"
         );
     }
     config::save(path, &config)?;
@@ -83,13 +87,14 @@ fn set(path: &Utf8Path, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Writes the default configuration to `path`.
 fn reset(path: &Utf8Path) -> Result<()> {
     config::save(path, &AppConfig::default())?;
     println!("{}", format!("Reset {path} to the defaults").bright_green());
     Ok(())
 }
 
-/// Puts `value` at the dotted `key`, creating the tables on the way.
+/// Inserts `value` at the dotted `key`. Creates missing parent tables.
 fn insert(table: &mut toml::Table, key: &str, value: toml::Value) -> Result<()> {
     let mut segments: Vec<&str> = key.split('.').collect();
     let leaf = segments.pop().filter(|leaf| !leaf.is_empty());
@@ -109,7 +114,7 @@ fn insert(table: &mut toml::Table, key: &str, value: toml::Value) -> Result<()> 
     Ok(())
 }
 
-/// Whether `table` has a value at the dotted `key`.
+/// Returns `true` if `table` has a value at the dotted `key`.
 fn contains(table: &toml::Table, key: &str) -> bool {
     let mut segments = key.split('.');
     let Some(mut value) = segments.next().and_then(|first| table.get(first)) else {
@@ -124,7 +129,7 @@ fn contains(table: &toml::Table, key: &str) -> bool {
     true
 }
 
-/// Parses a string value into an appropriate TOML value type
+/// Parses `value` as a TOML boolean or integer. Falls back to a TOML string.
 fn parse_value(value: &str) -> toml::Value {
     if let Ok(b) = value.parse::<bool>() {
         return toml::Value::Boolean(b);
@@ -164,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn set_rejects_a_value_of_the_wrong_type() {
+    fn set_rejects_value_of_wrong_type() {
         let (_guard, path) = temp_config();
         let error = set(&path, "print_config.indent_size", "wide").unwrap_err();
         assert!(error.to_string().contains("cannot be set"));
@@ -172,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn set_rejects_a_key_the_config_does_not_have() {
+    fn set_rejects_unknown_key() {
         let (_guard, path) = temp_config();
         for key in ["print_config.line_width", "no_such_key"] {
             let error = set(&path, key, "80").unwrap_err();
@@ -182,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_writes_the_defaults() {
+    fn reset_writes_default_config() {
         let (_guard, path) = temp_config();
         set(&path, "print_config.indent_size", "2").unwrap();
         reset(&path).unwrap();

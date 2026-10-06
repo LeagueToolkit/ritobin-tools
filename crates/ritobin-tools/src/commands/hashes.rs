@@ -25,7 +25,7 @@ pub enum HashesCommand {
     #[command(visible_alias = "update")]
     Sync(SyncArgs),
 
-    /// Compare the installed hashtables with the latest release, without downloading them
+    /// Compare the installed hashtables with the latest release. Downloads nothing
     Check {
         #[command(flatten)]
         remote: RemoteArgs,
@@ -49,7 +49,7 @@ pub enum HashesCommand {
         #[arg(required = true, value_name = "HASH")]
         hashes: Vec<String>,
 
-        /// Look in one table instead of all four
+        /// Look up in this table only. Defaults to all four bin tables
         #[arg(short, long, value_enum)]
         table: Option<BinTable>,
 
@@ -57,7 +57,7 @@ pub enum HashesCommand {
         output: OutputArgs,
     },
 
-    /// Hash names the way bins do, and show which tables know them
+    /// Compute the bin hash of names, and list the tables that contain each name
     Hash {
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
@@ -66,16 +66,16 @@ pub enum HashesCommand {
         output: OutputArgs,
     },
 
-    /// Find the names that contain a text, ignoring case
+    /// List the names that contain a text. The match is case-insensitive
     Search {
-        /// The text to look for
+        /// Text to search for
         text: String,
 
-        /// Search one table instead of all four
+        /// Search this table only. Defaults to all four bin tables
         #[arg(short, long, value_enum)]
         table: Option<BinTable>,
 
-        /// The most names to print. 0 prints all of them
+        /// Maximum number of names to print. 0 means no limit
         #[arg(short = 'n', long, value_name = "N", default_value_t = 50)]
         limit: usize,
 
@@ -83,9 +83,9 @@ pub enum HashesCommand {
         output: OutputArgs,
     },
 
-    /// Write a table as a CDragon text list: one `<hash> <name>` per line
+    /// Write a table in the CDragon text format: one `<hash> <name>` per line
     Export {
-        /// The table to write
+        /// Table to export
         #[arg(value_enum)]
         table: BinTable,
 
@@ -95,19 +95,20 @@ pub enum HashesCommand {
     },
 }
 
-/// Where the hashtable releases are fetched from.
+/// The download source of the hashtable releases.
 #[derive(Args, Debug, Clone)]
 pub struct RemoteArgs {
-    /// The GitHub repository whose latest release holds the tables
+    /// GitHub repository. The tables are downloaded from its latest release
     #[arg(long, value_name = "OWNER/REPO", default_value = MIMIR_TABLES_REPO)]
     pub repo: String,
 
-    /// A base URL to fetch the tables from instead of a GitHub release
+    /// Base URL to download the tables from. Replaces the GitHub release
     #[arg(long, value_name = "URL", conflicts_with = "repo")]
     pub url: Option<String>,
 }
 
 impl RemoteArgs {
+    /// Returns the fetcher for the selected source.
     fn fetcher(&self) -> UreqFetch {
         UreqFetch::new(match &self.url {
             Some(url) => ReleaseSource::base_url(url.as_str()),
@@ -115,6 +116,7 @@ impl RemoteArgs {
         })
     }
 
+    /// Returns the URL or the repository name, for log messages.
     fn describe(&self) -> &str {
         self.url.as_deref().unwrap_or(&self.repo)
     }
@@ -125,12 +127,12 @@ pub struct SyncArgs {
     #[command(flatten)]
     pub remote: RemoteArgs,
 
-    /// Download every table again, even the ones that are up to date
+    /// Download all tables again, including tables that are up to date
     #[arg(long)]
     pub force: bool,
 }
 
-/// One of the four tables a bin's hashes resolve against.
+/// One of the four hashtables that resolve the hashes of a bin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum BinTable {
     /// Object paths
@@ -154,7 +156,7 @@ impl From<BinTable> for Table {
     }
 }
 
-/// The tables a query looks in: the one asked for, or all four.
+/// Returns the tables to search: `table` if it is set, otherwise all four bin tables.
 fn tables(table: Option<BinTable>) -> Vec<Table> {
     match table {
         Some(table) => vec![table.into()],
@@ -162,6 +164,7 @@ fn tables(table: Option<BinTable>) -> Vec<Table> {
     }
 }
 
+/// Runs a `hashes` command.
 pub fn run(ctx: &Context, command: HashesCommand) -> Result<()> {
     match command {
         HashesCommand::Sync(args) => sync(ctx, &args),
@@ -184,6 +187,7 @@ pub fn run(ctx: &Context, command: HashesCommand) -> Result<()> {
     }
 }
 
+/// Formats a byte count in mebibytes. Returns `-` for `None`.
 fn size(bytes: Option<u64>) -> String {
     match bytes {
         Some(bytes) => format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0)),
@@ -191,9 +195,10 @@ fn size(bytes: Option<u64>) -> String {
     }
 }
 
-/// Moves one progress bar over the bytes of every table an update downloads.
+/// Shows one progress bar for the total download size of an update.
 struct DownloadProgress {
     bar: ProgressBar,
+    /// The number of bytes downloaded so far for each table.
     done: Mutex<HashMap<Table, u64>>,
 }
 
@@ -233,6 +238,7 @@ impl UpdateObserver for DownloadProgress {
     }
 }
 
+/// Downloads the latest hashtables into the cache and logs the installed tables.
 pub fn sync(ctx: &Context, args: &SyncArgs) -> Result<()> {
     let store = ctx.store()?;
     tracing::info!(
@@ -267,7 +273,7 @@ pub fn sync(ctx: &Context, args: &SyncArgs) -> Result<()> {
         },
         UpdateOutcome::Completed(report) => {
             if report.installed.is_empty() {
-                tracing::info!("Every hashtable is up to date");
+                tracing::info!("All hashtables are up to date");
             } else {
                 let installed: Vec<&str> =
                     report.installed.iter().map(|table| table.id()).collect();
@@ -279,14 +285,14 @@ pub fn sync(ctx: &Context, args: &SyncArgs) -> Result<()> {
             }
             for table in &report.unsupported_tables {
                 tracing::warn!(
-                    "The {} table is in format {}, which this version cannot read. Update ritobin-tools.",
+                    "The {} table uses format version {}, which this version of ritobin-tools does not support. Update ritobin-tools.",
                     table.table,
                     table.format_version
                 );
             }
             if !report.unknown_tables.is_empty() {
                 tracing::debug!(
-                    "The release has tables this version does not know: {}",
+                    "The release contains tables that this version does not recognize: {}",
                     report.unknown_tables.join(", ")
                 );
             }
@@ -296,6 +302,7 @@ pub fn sync(ctx: &Context, args: &SyncArgs) -> Result<()> {
     Ok(())
 }
 
+/// One row of the `hashes check` output.
 #[derive(Serialize)]
 struct CheckRow {
     table: String,
@@ -305,6 +312,7 @@ struct CheckRow {
     download_bytes: Option<u64>,
 }
 
+/// Prints the installed and the latest version of each table.
 fn check(ctx: &Context, remote: &RemoteArgs, format: OutputFormat) -> Result<()> {
     let store = ctx.store()?;
     let report = store
@@ -344,7 +352,7 @@ fn check(ctx: &Context, remote: &RemoteArgs, format: OutputFormat) -> Result<()>
     })?;
 
     match report.behind() {
-        0 => tracing::info!("Every hashtable is up to date"),
+        0 => tracing::info!("All hashtables are up to date"),
         behind => tracing::info!(
             "{} out of date ({} to download). Run `ritobin-tools hashes sync`.",
             plural(behind, "table"),
@@ -354,6 +362,7 @@ fn check(ctx: &Context, remote: &RemoteArgs, format: OutputFormat) -> Result<()>
     Ok(())
 }
 
+/// One row of the `hashes status` output.
 #[derive(Serialize)]
 struct StatusRow {
     table: String,
@@ -361,10 +370,11 @@ struct StatusRow {
     entries: u64,
     size_bytes: Option<u64>,
     file: String,
-    /// Whether the table's file is in the cache directory.
+    /// `true` if the table file exists in the cache directory.
     present: bool,
 }
 
+/// Prints the tables listed in the cache manifest.
 fn status(ctx: &Context, format: OutputFormat) -> Result<()> {
     let store = ctx.store()?;
     let manifest = match store.manifest() {
@@ -418,19 +428,21 @@ fn status(ctx: &Context, format: OutputFormat) -> Result<()> {
     })?;
 
     tracing::info!(
-        "Cache directory: {} (written {})",
+        "Cache directory: {} (manifest generated {})",
         store.dir().display(),
         manifest.generated_at
     );
     Ok(())
 }
 
+/// Prints the cache directory.
 fn dir(ctx: &Context) -> Result<()> {
     let store = ctx.store()?;
     println!("{}", store.dir().display());
     Ok(())
 }
 
+/// One row of the `hashes lookup` output.
 #[derive(Serialize)]
 struct LookupRow {
     hash: String,
@@ -438,6 +450,8 @@ struct LookupRow {
     name: Option<String>,
 }
 
+/// Prints the name of each hash in each table that contains it. A hash that no table contains
+/// gets one row without a name.
 fn lookup(
     ctx: &Context,
     inputs: &[String],
@@ -448,7 +462,7 @@ fn lookup(
         .iter()
         .map(|input| {
             parse_hash(input)
-                .ok_or_else(|| miette::miette!("`{input}` is not a 32-bit hash in hex"))
+                .ok_or_else(|| miette::miette!("`{input}` is not a valid 32-bit hex hash"))
         })
         .collect::<Result<_>>()?;
 
@@ -491,14 +505,16 @@ fn lookup(
     })
 }
 
+/// One row of the `hashes hash` output.
 #[derive(Serialize)]
 struct HashRow {
     name: String,
     hash: String,
-    /// The tables that hold this name.
+    /// The tables that contain the name.
     known_in: Vec<String>,
 }
 
+/// Prints the bin hash of each name and the tables that contain the name.
 fn hash(ctx: &Context, names: &[String], format: OutputFormat) -> Result<()> {
     let known = ctx.hashes();
     let rows: Vec<HashRow> = names
@@ -539,6 +555,7 @@ fn hash(ctx: &Context, names: &[String], format: OutputFormat) -> Result<()> {
     })
 }
 
+/// One row of the `hashes search` output.
 #[derive(Serialize)]
 struct SearchRow {
     hash: String,
@@ -546,6 +563,8 @@ struct SearchRow {
     name: String,
 }
 
+/// Prints the names that contain `text`, compared case-insensitively. Prints at most `limit`
+/// names, or all names if `limit` is 0.
 fn search(
     ctx: &Context,
     text: &str,
@@ -576,7 +595,7 @@ fn search(
         searched += usize::from(loaded);
     }
     if searched == 0 {
-        miette::bail!("No hashtable to search is loaded. Run `ritobin-tools hashes sync`");
+        miette::bail!("No hashtable is loaded. Run `ritobin-tools hashes sync`");
     }
 
     print(&rows, format, |rows| {
@@ -589,13 +608,14 @@ fn search(
 
     if total > rows.len() {
         tracing::info!(
-            "Showing {} of {total} matches. Pass --limit 0 for all of them.",
+            "Showing {} of {total} matches. Pass --limit 0 to show all matches.",
             rows.len()
         );
     }
     Ok(())
 }
 
+/// Writes all names of `table` in the CDragon text format to `output`, or to standard output.
 fn export(ctx: &Context, table: BinTable, output: Option<Utf8PathBuf>) -> Result<()> {
     let table = Table::from(table);
     let mut out = String::new();
@@ -611,7 +631,7 @@ fn export(ctx: &Context, table: BinTable, output: Option<Utf8PathBuf>) -> Result
 
     if let Some(output) = &output {
         tracing::info!(
-            "Wrote {} of {table} to {}",
+            "Exported {} from {table} to {}",
             plural(count, "name"),
             hyperlink_path(output)
         );
@@ -624,13 +644,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_table_choice_narrows_the_tables_searched() {
+    fn tables_returns_selected_table_or_all() {
         assert_eq!(tables(Some(BinTable::Fields)), [Table::BinFields]);
         assert_eq!(tables(None), BIN_TABLES);
     }
 
     #[test]
-    fn sizes_are_printed_in_mebibytes() {
+    fn size_formats_mebibytes() {
         assert_eq!(size(Some(3 * 1024 * 1024 / 2)), "1.5 MiB");
         assert_eq!(size(None), "-");
     }

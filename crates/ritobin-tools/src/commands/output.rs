@@ -1,4 +1,4 @@
-//! How the commands that list things print their rows: as a table or as JSON.
+//! Prints the rows of list commands as a table or as JSON.
 
 use std::fmt::Write as _;
 
@@ -9,9 +9,10 @@ use serde::Serialize;
 
 use crate::document::{STDIO, write_bytes};
 
+/// The output format option shared by the list commands.
 #[derive(Args, Debug, Clone, Copy)]
 pub struct OutputArgs {
-    /// How to print the result
+    /// Output format
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 }
@@ -22,7 +23,8 @@ pub enum OutputFormat {
     Json,
 }
 
-/// Prints `rows` as JSON, or as the text `table` makes of them.
+/// Prints `rows` to standard output: as a JSON array, or as the text that `table` returns for
+/// them.
 pub fn print<T: Serialize>(
     rows: &[T],
     format: OutputFormat,
@@ -39,7 +41,8 @@ pub fn print<T: Serialize>(
     write_bytes(STDIO.into(), out.as_bytes())
 }
 
-/// Lays `rows` out in columns under `header`, each column as wide as its widest cell.
+/// Formats `rows` as aligned columns under `header`. Each column has the width of its widest
+/// cell.
 pub fn columns<const N: usize>(header: [&str; N], rows: &[[String; N]]) -> String {
     let mut widths = header.map(str::len);
     for row in rows {
@@ -77,7 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn columns_are_as_wide_as_their_widest_cell() {
+    fn columns_use_width_of_widest_cell() {
         colored::control::set_override(false);
         let rows = [
             [

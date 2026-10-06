@@ -387,7 +387,7 @@ fn code(value: &impl Serialize) -> String {
     }
 }
 
-/// Returns the skip reason code of `diagnostic`, if it carries a property, record or object skip.
+/// Returns the skip reason code of `diagnostic`, if it has a property, record or object skip.
 fn reason(diagnostic: &ApplyDiagnostic) -> Option<String> {
     if let Some(property) = &diagnostic.property {
         return Some(code(&property.reason));

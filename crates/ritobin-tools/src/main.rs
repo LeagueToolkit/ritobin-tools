@@ -20,13 +20,14 @@ mod hashes;
 mod logging;
 mod utils;
 
-/// What a command that fails exits with.
+/// The exit code of a failed command.
 const EXIT_FAILURE: u8 = 1;
 
-/// What `diff --exit-code` exits with when the bins differ.
+/// The exit code of `diff --exit-code` if the bins differ.
 const EXIT_DIFFERENT: u8 = 1;
 
-/// What `diff --exit-code` exits with when it fails, so a failure is not read as a difference.
+/// The exit code of `diff --exit-code` if the command fails. It differs from [`EXIT_DIFFERENT`]
+/// so that a script can distinguish a failure from a difference.
 const EXIT_TROUBLE: u8 = 2;
 
 fn main() -> ExitCode {
@@ -53,6 +54,7 @@ fn main() -> ExitCode {
     code
 }
 
+/// Runs the selected command and returns its exit code.
 fn run(cli: Cli) -> Result<ExitCode> {
     let ctx = Context::new(&cli)?;
 

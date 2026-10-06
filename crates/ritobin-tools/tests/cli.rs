@@ -1,4 +1,4 @@
-//! Runs the built binary the way a user does.
+//! Integration tests that run the built `ritobin-tools` binary.
 
 use std::{
     fs,
@@ -23,6 +23,7 @@ entries: map[hash, embed] = {
 
 const FIELDS: &[&str] = &["Size", "Name", "Tags"];
 
+/// A temporary directory for the files of one test.
 struct Workspace {
     dir: tempfile::TempDir,
 }
@@ -34,17 +35,19 @@ impl Workspace {
         }
     }
 
+    /// Returns the path of `name` in the workspace directory.
     fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
     }
 
+    /// Writes `content` to the file `name` and returns its path.
     fn write(&self, name: &str, content: &str) -> PathBuf {
         let path = self.path(name);
         fs::write(&path, content).unwrap();
         path
     }
 
-    /// A directory of text tables naming the fields of [`BASE`].
+    /// Writes a text hashtable with the field names of [`BASE`] and returns its directory.
     fn field_table(&self) -> PathBuf {
         let dir = self.path("tables");
         fs::create_dir_all(&dir).unwrap();
@@ -56,7 +59,9 @@ impl Workspace {
         dir
     }
 
-    /// The tool, pointed at an empty cache so the tables installed on the machine are never read.
+    /// Returns a command for the tool with a hashtable cache directory that does not exist and
+    /// a config file in the workspace. The test therefore does not read the hashtables or the
+    /// config installed on the machine.
     fn tool(&self) -> Command {
         let mut command = Command::cargo_bin("ritobin-tools").unwrap();
         command
@@ -68,7 +73,7 @@ impl Workspace {
     }
 }
 
-/// The hash a bin gives a name: FNV-1a of it in lower case.
+/// Returns the bin hash of `name`: FNV-1a of the lowercased name.
 fn fnv1a(name: &str) -> u32 {
     name.to_ascii_lowercase()
         .bytes()
@@ -85,12 +90,35 @@ fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
 }
 
+/// Returns the standard error of `output` as one line. Removes ANSI color codes and the `│`
+/// gutter that the diagnostic renderer adds to wrapped lines, and collapses whitespace. A test
+/// uses it to match a message that the renderer may wrap at any word.
+fn stderr_line(output: &Output) -> String {
+    let text = stderr(output);
+    let mut plain = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            }
+            '│' => {}
+            _ => plain.push(c),
+        }
+    }
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap()
 }
 
 #[test]
-fn text_converts_to_a_bin_and_back_to_the_same_text() {
+fn convert_round_trips_text_through_bin() {
     let ws = Workspace::new();
     let text = ws.write("skin0.rito", BASE);
     let tables = ws.field_table();
@@ -136,7 +164,7 @@ fn text_converts_to_a_bin_and_back_to_the_same_text() {
 }
 
 #[test]
-fn a_bin_and_its_text_given_together_are_both_left_alone() {
+fn convert_fails_when_output_is_another_input() {
     let ws = Workspace::new();
     let text = ws.write("skin0.rito", BASE);
     ws.tool().arg("convert").arg(&text).assert().success();
@@ -153,13 +181,13 @@ fn a_bin_and_its_text_given_together_are_both_left_alone() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("which is also an input"));
+    assert!(stderr_line(&output).contains("which is also an input"));
     assert_eq!(read(&text), edited);
     assert_eq!(fs::read(&bin).unwrap(), before);
 }
 
 #[test]
-fn diff_with_exit_code_tells_a_failure_from_a_difference() {
+fn diff_exit_code_is_2_on_failure() {
     let ws = Workspace::new();
     let base = ws.write("base.rito", BASE);
 
@@ -175,7 +203,7 @@ fn diff_with_exit_code_tells_a_failure_from_a_difference() {
 }
 
 #[test]
-fn convert_reads_standard_input_and_writes_standard_output() {
+fn convert_reads_stdin_and_writes_stdout() {
     let ws = Workspace::new();
     let output = ws
         .tool()
@@ -197,7 +225,7 @@ fn convert_reads_standard_input_and_writes_standard_output() {
 }
 
 #[test]
-fn keep_hashed_leaves_every_hash_as_hex() {
+fn keep_hashed_prints_hashes_as_hex() {
     let ws = Workspace::new();
     let text = ws.write("skin0.rito", BASE);
     let tables = ws.field_table();
@@ -217,7 +245,7 @@ fn keep_hashed_leaves_every_hash_as_hex() {
 }
 
 #[test]
-fn text_with_a_problem_fails_and_names_the_problem() {
+fn convert_fails_on_invalid_text_and_lenient_converts_it() {
     let ws = Workspace::new();
     let broken = ws.write(
         "broken.rito",
@@ -226,7 +254,7 @@ fn text_with_a_problem_fails_and_names_the_problem() {
 
     let output = ws.tool().arg("convert").arg(&broken).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("Type mismatch"));
+    assert!(stderr_line(&output).contains("Type mismatch"));
     assert!(!ws.path("broken.bin").exists());
 
     ws.tool()
@@ -239,7 +267,7 @@ fn text_with_a_problem_fails_and_names_the_problem() {
 }
 
 #[test]
-fn diff_reports_changes_as_csv_and_sets_the_exit_code() {
+fn diff_prints_csv_and_exit_code_is_1_when_bins_differ() {
     let ws = Workspace::new();
     let base = ws.write("base.rito", BASE);
     let edited = ws.write(
@@ -281,7 +309,7 @@ fn diff_reports_changes_as_csv_and_sets_the_exit_code() {
 }
 
 #[test]
-fn diff_saves_a_patch_that_names_the_changed_property() {
+fn diff_saves_patch_with_named_record() {
     let ws = Workspace::new();
     let base = ws.write("base.rito", BASE);
     let edited = ws.write(
@@ -324,7 +352,7 @@ fn diff_saves_a_patch_that_names_the_changed_property() {
 }
 
 #[test]
-fn hashes_hash_prints_the_bin_hash_of_a_name() {
+fn hashes_hash_prints_bin_hash() {
     let ws = Workspace::new();
     let output = ws
         .tool()
@@ -339,7 +367,7 @@ fn hashes_hash_prints_the_bin_hash_of_a_name() {
 }
 
 #[test]
-fn hashes_lookup_reads_the_extra_text_tables() {
+fn hashes_lookup_uses_text_tables() {
     let ws = Workspace::new();
     let tables = ws.field_table();
     let output = ws
@@ -523,7 +551,7 @@ fn gamedata_check_exits_1_when_a_problem_is_reported() {
 }
 
 #[test]
-fn hashtable_dir_prints_the_cache_directory_in_use() {
+fn hashtable_dir_prints_cache_directory() {
     let ws = Workspace::new();
     let output = ws.tool().arg("hashtable-dir").output().unwrap();
     assert_eq!(
@@ -533,7 +561,7 @@ fn hashtable_dir_prints_the_cache_directory_in_use() {
 }
 
 #[test]
-fn files_dropped_on_the_executable_are_converted() {
+fn bare_file_arguments_are_converted() {
     let ws = Workspace::new();
     let text = ws.write("skin0.rito", BASE);
 
