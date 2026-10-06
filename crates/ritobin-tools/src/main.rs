@@ -14,6 +14,8 @@ mod config;
 mod context;
 mod diff;
 mod document;
+mod game;
+mod gamedata;
 mod hashes;
 mod logging;
 mod utils;
@@ -67,6 +69,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Commands::DownloadHashes(args) => commands::hashes::sync(&ctx, &args)?,
         Commands::HashtableDir => commands::hashes::run(&ctx, HashesCommand::Dir)?,
         Commands::Config { command } => commands::config::run(&ctx, command)?,
+        Commands::GameData { command } => {
+            if !commands::gamedata::run(&ctx, command)? {
+                return Ok(ExitCode::from(EXIT_FAILURE));
+            }
+        }
         #[cfg(windows)]
         Commands::Shell { command } => commands::shell::run(command)?,
     }

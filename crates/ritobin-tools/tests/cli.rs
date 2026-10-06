@@ -356,6 +356,172 @@ fn hashes_lookup_reads_the_extra_text_tables() {
     assert_eq!(rows[0]["name"], "Size");
 }
 
+/// Writes a game directory with one archive containing `chunks`, given as `(chunk path, data)`
+/// pairs. Returns the installation directory.
+fn write_game(ws: &Workspace, chunks: &[(&str, &[u8])]) -> PathBuf {
+    use std::{collections::BTreeMap, io::Write as _};
+
+    use ltk_wad::{WadBuilder, WadChunkBuilder, WadChunkCompression, WadHash};
+
+    let mut builder = WadBuilder::default();
+    for (chunk, _) in chunks {
+        builder = builder.with_chunk(
+            WadChunkBuilder::default()
+                .with_path(*chunk)
+                .with_force_compression(WadChunkCompression::None),
+        );
+    }
+    let data: BTreeMap<WadHash, Vec<u8>> = chunks
+        .iter()
+        .map(|(chunk, bytes)| (ltk_game_index::chunk_hash(chunk), bytes.to_vec()))
+        .collect();
+    let mut archive = std::io::Cursor::new(Vec::new());
+    builder
+        .build_to_writer(&mut archive, move |hash, writer| {
+            writer.write_all(&data[&hash])?;
+            Ok(())
+        })
+        .unwrap();
+
+    let game = ws.path("League");
+    let archives = game.join("Game").join("DATA").join("FINAL");
+    fs::create_dir_all(&archives).unwrap();
+    fs::write(archives.join("Test.wad.client"), archive.into_inner()).unwrap();
+    game
+}
+
+#[test]
+fn gamedata_apply_writes_bin_with_edits_and_override_patch() {
+    let ws = Workspace::new();
+    let tables = ws.field_table();
+    let base = ws.write("base.rito", BASE);
+    ws.tool().arg("convert").arg(&base).assert().success();
+    let game = write_game(
+        &ws,
+        &[("data/skin0.bin", &fs::read(ws.path("base.bin")).unwrap())],
+    );
+    let game_args = |command: &mut Command| {
+        command
+            .arg("--game-dir")
+            .arg(&game)
+            .arg("--index-dir")
+            .arg(ws.path("index"));
+    };
+
+    // Save a PTCH file with `diff --patch` and reference it from the manifest as an override.
+    fs::create_dir_all(ws.path("layer")).unwrap();
+    let edited = ws.write(
+        "edited.rito",
+        &BASE.replace("Size: f32 = 1", "Size: f32 = 2"),
+    );
+    ws.tool()
+        .arg("diff")
+        .arg(&base)
+        .arg(&edited)
+        .args(["--format", "summary", "--patch"])
+        .arg(ws.path("layer").join("size.ptch"))
+        .arg("--hashtable")
+        .arg(&tables)
+        .assert()
+        .success();
+    fs::write(
+        ws.path("layer").join("game_data.yaml"),
+        "version: 1\nmodules:\n  - target: data/skin0.bin\n    overrides: [size.ptch]\n    Characters/Test/Skins/Skin0:\n      Name: edited\n      +Tags: [c]\n",
+    )
+    .unwrap();
+
+    let mut apply = ws.tool();
+    apply
+        .args(["gamedata", "apply"])
+        .arg(ws.path("layer"))
+        .arg("--output")
+        .arg(ws.path("out"))
+        .args(["--format", "json"]);
+    game_args(&mut apply);
+    let output = apply.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["bins"][0]["target"], "data/skin0.bin");
+    assert_eq!(report["bins"][0]["records"], 1);
+    assert_eq!(report["bins"][0]["properties"], 2);
+    assert_eq!(report["problems"], serde_json::json!([]));
+
+    let written = ws.path("out").join("data").join("skin0.bin");
+    let output = ws
+        .tool()
+        .arg("convert")
+        .arg(&written)
+        .args(["--output", "-", "--hashtable"])
+        .arg(&tables)
+        .output()
+        .unwrap();
+    let printed = stdout(&output);
+    assert!(printed.contains("Size: f32 = 2"), "{printed}");
+    assert!(printed.contains("Name: string = \"edited\""), "{printed}");
+    assert!(printed.contains("\"c\""), "{printed}");
+
+    // `apply` does not modify the game. The game still has the original value.
+    let mut render = ws.tool();
+    render.args(["gamedata", "render", "Characters/Test/Skins/Skin0:Name"]);
+    game_args(&mut render);
+    assert_eq!(stdout(&render.output().unwrap()), "base\n");
+
+    let output = ws
+        .tool()
+        .args([
+            "gamedata",
+            "render",
+            "Characters/Test/Skins/Skin0:Tags",
+            "--bin",
+        ])
+        .arg(&written)
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&output), "[a, b, c]\n");
+}
+
+#[test]
+fn gamedata_check_exits_1_when_a_problem_is_reported() {
+    let ws = Workspace::new();
+    let base = ws.write("base.rito", BASE);
+    ws.tool().arg("convert").arg(&base).assert().success();
+    let game = write_game(
+        &ws,
+        &[("data/skin0.bin", &fs::read(ws.path("base.bin")).unwrap())],
+    );
+    let manifest = ws.write(
+        "game_data.yaml",
+        "version: 1\nmodules:\n  - target: data/skin0.bin\n    Characters/Test/Skins/Skin0:\n      Size: 3\n  - entries:\n      Characters/Test/Skins/Skin9:\n        Size: 3\n",
+    );
+
+    ws.tool()
+        .args(["gamedata", "check"])
+        .arg(&manifest)
+        .arg("--no-game")
+        .assert()
+        .success();
+
+    let output = ws
+        .tool()
+        .args(["gamedata", "check"])
+        .arg(&manifest)
+        .arg("--game-dir")
+        .arg(&game)
+        .arg("--index-dir")
+        .arg(ws.path("index"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report = stdout(&output);
+    assert!(report.contains("data/skin0.bin  1"), "{report}");
+    assert!(
+        report.contains("Entry Characters/Test/Skins/Skin9 is not declared by any game bin"),
+        "{report}"
+    );
+    assert!(!ws.path("out").exists());
+}
+
 #[test]
 fn hashtable_dir_prints_the_cache_directory_in_use() {
     let ws = Workspace::new();

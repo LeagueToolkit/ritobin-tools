@@ -20,6 +20,9 @@ const LEGACY_CONFIG_FILE_NAME: &str = "config.toml";
 pub struct AppConfig {
     /// The hashtable cache directory. Unset means the cache every LeagueToolkit tool shares.
     pub hashtable_dir: Option<Utf8PathBuf>,
+    /// The game directory used by the `gamedata` commands: the `Game` directory of an
+    /// installation, or its parent directory.
+    pub game_dir: Option<Utf8PathBuf>,
     /// How ritobin text is laid out.
     pub print_config: TextLayout,
 }
@@ -94,6 +97,7 @@ mod tests {
         let path = Utf8PathBuf::from_path_buf(dir.path().join(CONFIG_FILE_NAME)).unwrap();
         let config = AppConfig {
             hashtable_dir: Some("C:/hashes".into()),
+            game_dir: Some("C:/Riot Games/League of Legends".into()),
             print_config: TextLayout {
                 indent_size: 2,
                 inline_structs: true,
