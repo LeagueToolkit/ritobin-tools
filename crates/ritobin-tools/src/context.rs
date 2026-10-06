@@ -7,7 +7,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use crate::{
     cli::{Cli, Commands},
     config::{self, AppConfig},
-    hashes::BinHashes,
+    hashes::{BinHashes, GameNames, WadPaths},
 };
 
 pub struct Context {
@@ -102,6 +102,19 @@ impl Context {
             .inspect_err(|error| tracing::warn!("{error}"))
             .ok();
         BinHashes::load(store.as_ref(), self.extra_hashtables.as_deref())
+    }
+
+    /// Opens the table of game paths, which names the chunks of the game's archives.
+    pub fn wad_paths(&self) -> WadPaths {
+        WadPaths::load(self.store().ok().as_ref())
+    }
+
+    /// Every name a value written as a game-data declaration carries.
+    pub fn game_names(&self) -> GameNames {
+        GameNames {
+            bins: self.hashes(),
+            paths: self.wad_paths(),
+        }
     }
 }
 

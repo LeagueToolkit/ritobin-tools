@@ -10,6 +10,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
+- **Game-data declarations**: check a manifest of bin edits, apply it to the installed game's bins, and print values the way a manifest writes them
 - **Batch** conversion of directories, and `-` for standard input and output
 - **Windows Explorer** right-click menu, and files dropped on the executable
 - Works on Windows, Linux and macOS
@@ -241,6 +242,68 @@ A bin uses four tables, and `--table` takes their short names:
 | `hashes` | Values of `hash` and `link` properties |
 | `types` | Class names |
 
+### gamedata
+
+Works with [game-data declarations](https://wiki.leaguetoolkit.dev/reference/mod-packages/game-data/): a manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`) of edits to the game's bins, as a LeagueToolkit mod carries it. The alias is `gd`.
+
+```yaml
+version: 1
+modules:
+  # Edits to one bin
+  - target: data/characters/teemo/skins/skin0.bin
+    +links: [data/mods/example.bin]
+    Characters/Teemo/Skins/Skin0:
+      skinMeshProperties.selfIllumination: 0.25
+      +skinAudioProperties.tagEventList: [Example]
+  # Edits to an entry, in every bin of the game that declares it
+  - entries:
+      Characters/Teemo/Skins/Skin0:
+        armorMaterial: Metal
+```
+
+```bash
+# Check the manifest alone
+ritobin-tools gamedata check ./layer --no-game
+
+# Check it against the game: what would change, and what would not apply
+ritobin-tools gamedata check ./layer --game-dir "C:/Riot Games/League of Legends"
+
+# Apply it to the game's bins and write the edited bins, each at its path in the game
+ritobin-tools gamedata apply ./layer -o ./out
+
+# Print an entry of the game, or one value of it, the way a manifest writes it
+ritobin-tools gamedata render Characters/Teemo/Skins/Skin0
+ritobin-tools gamedata render Characters/Teemo/Skins/Skin0:skinMeshProperties.texture
+
+# The same from a file instead of the game
+ritobin-tools gamedata render Characters/Teemo/Skins/Skin0 --bin skin0.bin
+```
+
+Common flags:
+
+- `<MANIFEST>`: the manifest file, or the directory it is in. Source files and override files are read relative to it
+- `--game-dir <DIR>`: the `Game` directory of an installation, or the directory that holds it. Defaults to `game_dir` in the config
+- `--index-dir <DIR>`: where the indexes of the game are cached, in place of the user's data directory
+- `-f, --format <table|json>` on `check` and `apply`: how to print the report
+- `-o, --output <DIR>`, `-t, --to <bin|rito>`, `--ext`, `-k` and the text layout flags on `apply`
+
+The game is only read. `apply` writes the edited bins under `--output`, as files a mod can ship. A bin no edit applied to is not written.
+
+The base of a bin is the game's copy: the one in the first archive that holds it. Modules apply in manifest order, each over what the ones before it left. A reference (`!ref <entry>:<path>`) reads the game's copy of the entry it names. An override file is a `PTCH` file with the `.ptch` extension, which `diff --patch` writes:
+
+```bash
+ritobin-tools diff base.bin edited.bin --patch ./layer/edited.ptch
+```
+
+`check` with a game and `apply` print the bins the manifest edits, with a count of what applied, and every edit that did not apply. Both exit with 1 when one did not. The `kind` and `reason` of a problem in the `json` report are the codes of `ltk_game_data`, which LTK Manager reports too.
+
+Finding the bins that declare an entry, and the entry a reference names, needs an index of every bin object of the game. It is built the first time it is needed and after each game patch, which takes a while, and is cached under `LeagueToolkit/game-index` in the user's data directory.
+
+What this version does not do:
+
+- It reads no class schema. A property is typed by the value the bin already has for it, so an edit that adds a property the bin does not have is reported as `untypable`, and an object cannot be made from a class. An object can be cloned.
+- It applies one manifest to the game. It does not layer several mods, and it does not read a bin from a mod's own files.
+
 ### config
 
 ```bash
@@ -279,6 +342,9 @@ Settings are read from `ritobin-tools.toml` next to the executable, or from the 
 ```toml
 # Hashtable cache directory. Leave it out to use the shared cache.
 hashtable_dir = "D:/hashes"
+
+# The game the gamedata commands read.
+game_dir = "C:/Riot Games/League of Legends"
 
 # How ritobin text is laid out.
 [print_config]

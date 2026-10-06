@@ -3,7 +3,7 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use camino::Utf8Path;
-use ltk_hash::BinHash;
+use ltk_hash::{BinHash, WadHash};
 use ltk_meta::path::FieldNames;
 use ltk_mimir_cache::{HashStore, ManifestError, OpenError, Table, ltk_hashdb::HashDb};
 use ltk_ritobin::{HashMapProvider, HashProvider};
@@ -193,6 +193,75 @@ impl FieldNames for BinHashes {
 
     fn hash(&self, hash: BinHash) -> Option<Cow<'_, str>> {
         self.lookup(Table::BinHashes, hash)
+    }
+}
+
+/// Names for the chunk hashes of the game's archives, from the Mimir table of game paths.
+///
+/// Cloning is cheap: the table is a shared handle.
+#[derive(Clone, Default)]
+pub struct WadPaths(Option<HashDb>);
+
+impl WadPaths {
+    /// Opens the table of game paths of `store`. A cache without it names nothing.
+    pub fn load(store: Option<&HashStore>) -> Self {
+        Self(
+            store.and_then(|store| match store.open_shared(Table::Game) {
+                Ok(db) => Some(db),
+                Err(OpenError::Manifest(ManifestError::Missing(_))) => None,
+                Err(error) => {
+                    tracing::warn!("Could not open the {} hashtable: {error}", Table::Game);
+                    None
+                }
+            }),
+        )
+    }
+
+    /// Whether the table is loaded.
+    pub fn is_loaded(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// The path of `chunk`, if the table has it.
+    pub fn path(&self, chunk: WadHash) -> Option<String> {
+        Some(self.0.as_ref()?.get(chunk.0)?.into_owned())
+    }
+}
+
+impl ltk_wad::PathResolver for WadPaths {
+    fn resolve(&self, path_hash: WadHash) -> Option<String> {
+        self.path(path_hash)
+    }
+}
+
+/// Every name a value rendered as a game-data declaration carries.
+#[derive(Clone, Default)]
+pub struct GameNames {
+    pub bins: BinHashes,
+    pub paths: WadPaths,
+}
+
+impl FieldNames for GameNames {
+    fn field(&self, field: BinHash, class: Option<BinHash>) -> Option<Cow<'_, str>> {
+        self.bins.field(field, class)
+    }
+
+    fn hash(&self, hash: BinHash) -> Option<Cow<'_, str>> {
+        self.bins.hash(hash)
+    }
+}
+
+impl ltk_game_data::Names for GameNames {
+    fn class(&self, class: BinHash) -> Option<Cow<'_, str>> {
+        self.bins.lookup(Table::BinTypes, class)
+    }
+
+    fn entry(&self, entry: BinHash) -> Option<Cow<'_, str>> {
+        self.bins.lookup(Table::BinEntries, entry)
+    }
+
+    fn file(&self, chunk: u64) -> Option<Cow<'_, str>> {
+        self.paths.path(WadHash(chunk)).map(Cow::Owned)
     }
 }
 

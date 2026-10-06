@@ -15,6 +15,7 @@ use crate::{
         config::ConfigCommand,
         convert::ConvertArgs,
         diff::DiffArgs,
+        gamedata::GameDataCommand,
         hashes::{HashesCommand, SyncArgs},
     },
     document::{MAX_LINE_WIDTH, MIN_LINE_WIDTH, TextLayout},
@@ -98,6 +99,13 @@ pub enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+
+    /// Check and apply game-data declarations: a manifest of edits to the game's bins
+    #[command(name = "gamedata", visible_alias = "gd")]
+    GameData {
+        #[command(subcommand)]
+        command: GameDataCommand,
     },
 
     /// Manage the Windows Explorer right-click menu
@@ -316,6 +324,8 @@ mod tests {
             "dl",
             "hd",
             "config",
+            "gamedata",
+            "gd",
         ] {
             assert!(is_subcommand(OsStr::new(name)), "{name}");
         }
