@@ -31,17 +31,24 @@ fn main() -> ExitCode {
     let cli = cli::parse();
     logging::init(cli.verbosity);
 
+    let pause = cli.pause;
     let failure = match &cli.command {
         Commands::Diff(args) if args.exit_code => EXIT_TROUBLE,
         _ => EXIT_FAILURE,
     };
-    match run(cli) {
+    let outcome = run(cli);
+    let failed = outcome.is_err();
+    let code = match outcome {
         Ok(code) => code,
         Err(error) => {
             eprintln!("Error: {error:?}");
             ExitCode::from(failure)
         }
+    };
+    if pause.applies(failed) {
+        utils::wait_for_enter();
     }
+    code
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
@@ -60,6 +67,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Commands::DownloadHashes(args) => commands::hashes::sync(&ctx, &args)?,
         Commands::HashtableDir => commands::hashes::run(&ctx, HashesCommand::Dir)?,
         Commands::Config { command } => commands::config::run(&ctx, command)?,
+        #[cfg(windows)]
+        Commands::Shell { command } => commands::shell::run(command)?,
     }
     Ok(ExitCode::SUCCESS)
 }

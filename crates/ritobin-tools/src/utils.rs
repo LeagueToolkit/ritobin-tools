@@ -1,7 +1,14 @@
-use std::io::IsTerminal as _;
+use std::io::{IsTerminal as _, Write as _};
 
 use camino::Utf8Path;
 use colored::Colorize;
+
+/// Waits for Enter, so a console window that closes when the run ends can be read first.
+pub fn wait_for_enter() {
+    eprint!("\nPress Enter to exit...");
+    let _ = std::io::stderr().flush();
+    let _ = std::io::stdin().read_line(&mut String::new());
+}
 
 /// Format a path as a clickable hyperlink using OSC 8 escape sequences.
 /// Supported by modern terminals like Windows Terminal, iTerm2, VS Code terminal, etc.

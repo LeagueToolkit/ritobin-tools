@@ -2,7 +2,6 @@ use std::{collections::HashMap, fmt::Write as _, sync::Mutex};
 
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
-use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use ltk_hash::{BinHash, Hash as _};
 use ltk_mimir_cache::{
@@ -13,6 +12,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use serde::Serialize;
 
 use crate::{
+    commands::output::{OutputArgs, OutputFormat, columns, print},
     context::Context,
     document::{STDIO, write_bytes},
     hashes::{BIN_TABLES, MIMIR_TABLES_REPO, format_hash, parse_hash},
@@ -130,19 +130,6 @@ pub struct SyncArgs {
     pub force: bool,
 }
 
-#[derive(Args, Debug, Clone, Copy)]
-pub struct OutputArgs {
-    /// How to print the result
-    #[arg(short, long, value_enum, default_value_t = OutputFormat::Table)]
-    pub format: OutputFormat,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum OutputFormat {
-    Table,
-    Json,
-}
-
 /// One of the four tables a bin's hashes resolve against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum BinTable {
@@ -195,56 +182,6 @@ pub fn run(ctx: &Context, command: HashesCommand) -> Result<()> {
         } => search(ctx, &text, table, limit, output.format),
         HashesCommand::Export { table, output } => export(ctx, table, output),
     }
-}
-
-/// Prints `rows` as JSON, or as the text `table` makes of them.
-fn print<T: Serialize>(
-    rows: &[T],
-    format: OutputFormat,
-    table: impl FnOnce(&[T]) -> String,
-) -> Result<()> {
-    let out = match format {
-        OutputFormat::Json => {
-            let mut out = serde_json::to_string_pretty(rows).into_diagnostic()?;
-            out.push('\n');
-            out
-        }
-        OutputFormat::Table => table(rows),
-    };
-    write_bytes(STDIO.into(), out.as_bytes())
-}
-
-/// Lays `rows` out in columns under `header`, each column as wide as its widest cell.
-fn columns<const N: usize>(header: [&str; N], rows: &[[String; N]]) -> String {
-    let mut widths = header.map(str::len);
-    for row in rows {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
-
-    let mut out = String::new();
-    let mut line = |cells: [&str; N], bold: bool| {
-        let mut text = String::new();
-        for (index, (cell, width)) in cells.iter().zip(widths).enumerate() {
-            match index + 1 == N {
-                true => text.push_str(cell),
-                false => {
-                    let _ = write!(text, "{cell:<width$}  ");
-                }
-            }
-        }
-        let text = text.trim_end();
-        let _ = match bold {
-            true => writeln!(out, "{}", text.bold()),
-            false => writeln!(out, "{text}"),
-        };
-    };
-    line(header, true);
-    for row in rows {
-        line(std::array::from_fn(|index| row[index].as_str()), false);
-    }
-    out
 }
 
 fn size(bytes: Option<u64>) -> String {
@@ -685,23 +622,6 @@ fn export(ctx: &Context, table: BinTable, output: Option<Utf8PathBuf>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn columns_are_as_wide_as_their_widest_cell() {
-        colored::control::set_override(false);
-        let rows = [
-            [
-                "0x00000001".to_owned(),
-                "binfields".to_owned(),
-                "mName".to_owned(),
-            ],
-            ["0x2".to_owned(), "-".to_owned(), "(unknown)".to_owned()],
-        ];
-        assert_eq!(
-            columns(["HASH", "TABLE", "NAME"], &rows),
-            "HASH        TABLE      NAME\n0x00000001  binfields  mName\n0x2         -          (unknown)\n"
-        );
-    }
 
     #[test]
     fn a_table_choice_narrows_the_tables_searched() {

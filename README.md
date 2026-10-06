@@ -11,6 +11,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
 - **Batch** conversion of directories, and `-` for standard input and output
+- **Windows Explorer** right-click menu, and files dropped on the executable
 - Works on Windows, Linux and macOS
 
 ## Installation
@@ -28,6 +29,9 @@ This will:
 - Download the latest release
 - Install to `%LOCALAPPDATA%\LeagueToolkit\ritobin-tools`
 - Add to your PATH automatically
+- Ask whether to add the [Explorer right-click menu](#shell)
+
+To answer that question ahead of time, download the script and pass `-ShellIntegration` or `-NoShellIntegration`.
 
 ### From Source
 
@@ -56,7 +60,7 @@ ritobin-tools convert skin0.rito
 # Creates skin0.bin
 ```
 
-On Windows you can also drop files on `ritobin-tools.exe`. Each one is converted next to itself.
+On Windows you can also drop files on `ritobin-tools.exe`. Each one is converted next to itself, and the window stays open when a conversion fails. For a right-click menu in Explorer, see [shell](#shell).
 
 ## Usage
 
@@ -110,7 +114,7 @@ ritobin-tools convert skin0.bin --ext py --indent-size 2
 ritobin-tools convert - < skin0.bin > skin0.rito
 ```
 
-A directory scan reads `.bin` as binary and `.rito`, `.ritobin` and `.py` as text. It converts one direction per run, so a folder that holds both `skin0.bin` and `skin0.rito` is never converted over itself.
+A directory scan reads `.bin` as binary and `.rito`, `.ritobin` and `.py` as text. It converts one direction per run, so a folder that holds both `skin0.bin` and `skin0.rito` is never converted over itself. A `.py` file is taken only when it starts with the `#PROP_text` or `#PTCH_text` line, so Python source in the same folder is left alone.
 
 Text is checked before it is converted. A syntax or type error stops the conversion and is shown with the line it is on. A batch run converts the files that are valid, reports the others, and exits with 1.
 
@@ -245,6 +249,28 @@ ritobin-tools config set print_config.indent_size 2
 ritobin-tools config set hashtable_dir "D:/hashes"
 ritobin-tools config reset
 ```
+
+### shell
+
+Windows only. Adds a `ritobin-tools` submenu to the Explorer right-click menu:
+
+```powershell
+ritobin-tools shell install     # add the menu
+ritobin-tools shell status      # show each entry and the command it runs
+ritobin-tools shell uninstall   # remove the menu
+```
+
+| Right-click on | Entries |
+| --- | --- |
+| A `.bin` file | Convert to .rito, Update hashtables |
+| A `.rito` or `.ritobin` file | Convert to .bin |
+| A folder | Convert all .bin to .rito, Convert all .rito to .bin, Update hashtables |
+
+The folder entries include the subfolders. Each entry opens a console window. After a file conversion the window stays open only when the conversion failed, and after a folder conversion or a hashtable update it always waits for Enter.
+
+The menu is installed for the current user and needs no administrator rights. It is a classic menu, so on Windows 11 it is under "Show more options". It is on every `.bin` file, because Explorer cannot tell a League bin from another file with that extension.
+
+The entries run the executable that installed them. Run `shell install` again after moving it. `shell status` marks the entries that run another command than the current version installs as `outdated`, and takes `-f, --format <table|json>`.
 
 ## Configuration
 

@@ -35,6 +35,9 @@ ltk_hash = "0.4"
 
 ltk_mimir_cache = { version = "0.1", features = ["ureq"] }
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = "3"
