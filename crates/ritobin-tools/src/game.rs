@@ -1,8 +1,7 @@
-//! The installed game: which archive holds each chunk, which chunk declares each bin object, and
-//! the chunks themselves.
+//! Read access to an installed game: chunk lookup, bin object lookup and chunk data.
 //!
-//! Both indexes come from `ltk_game_index`. They are cached on disk, and a cache is used only
-//! while the archives it was built from have not changed.
+//! Lookups use the chunk index and the object index of `ltk_game_index`. Both indexes are cached
+//! on disk. A cached index is rebuilt when the archive set of the game has changed.
 
 use std::{
     cell::{OnceCell, RefCell},
@@ -21,7 +20,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 
 use crate::hashes::WadPaths;
 
-/// The directory of the archives, under the game directory.
+/// The archive directory, relative to the game directory.
 const ARCHIVES_DIR: &str = "DATA/FINAL";
 
 const CHUNK_INDEX_FILE: &str = "game_index.bin";
@@ -30,22 +29,23 @@ const OBJECT_INDEX_FILE: &str = "object_index.bin";
 pub struct Game {
     dir: Utf8PathBuf,
     index: GameIndex,
-    /// Where the indexes of this game directory are cached.
+    /// The cache directory of the index files.
     index_dir: Utf8PathBuf,
     paths: WadPaths,
-    /// Built when the first object is asked for.
+    /// Loaded or built on the first call to [`Game::objects`].
     objects: OnceCell<ObjectIndex>,
+    /// Mounted archives, kept open between chunk reads.
     archives: RefCell<HashMap<ArchiveId, Wad<BufReader<File>>>>,
-    /// The decoded bins objects were read from.
+    /// Decoded bins, cached by [`Game::object`].
     bins: RefCell<HashMap<(ArchiveId, WadHash), Rc<BinFile>>>,
 }
 
 impl Game {
-    /// Opens the game at `dir`: the `Game` directory of an installation, or the directory that
-    /// holds it.
+    /// Opens the game at `dir` and loads or builds its chunk index.
     ///
-    /// `index_dir` is where the indexes are cached, in place of the user's data directory.
-    /// `paths` names chunks, which lets the object index skip the chunks that are not bins.
+    /// `dir` is the `Game` directory of an installation or its parent directory. `index_dir`
+    /// overrides the default index cache directory. `paths` resolves chunk hashes to paths. The
+    /// object index build uses it to skip chunks whose path is not a `.bin`.
     pub fn open(dir: &Utf8Path, index_dir: Option<&Utf8Path>, paths: WadPaths) -> Result<Self> {
         let dir = game_dir(dir);
         let index_dir = match index_dir {
@@ -58,20 +58,20 @@ impl Game {
             Ok(index) => index,
             Err(error) => {
                 if !error.is_missing_file() {
-                    tracing::debug!("The chunk index is built again: {error}");
+                    tracing::debug!("Rebuilding the chunk index: {error}");
                 }
                 let index = GameIndex::build(&dir)
                     .into_diagnostic()
                     .wrap_err_with(|| format!("{dir} is not a game directory"))?;
                 if let Err(error) = index.save(&cache) {
-                    tracing::warn!("The chunk index was not cached: {error}");
+                    tracing::warn!("Failed to save the chunk index cache: {error}");
                 }
                 index
             }
         };
         for skipped in index.skipped() {
             tracing::warn!(
-                "{} cannot be read and is left out: {}",
+                "Skipped unreadable archive {}: {}",
                 index.archive(skipped.archive).name,
                 skipped.error
             );
@@ -88,19 +88,20 @@ impl Game {
         })
     }
 
+    /// Returns the resolved `Game` directory.
     pub fn dir(&self) -> &Utf8Path {
         &self.dir
     }
 
-    /// Returns the path of `chunk` when the hashtables have it, else its hash as 16 hex digits.
+    /// Returns the path of `chunk` from the hashtables. Falls back to the hash as 16 hex digits.
     pub fn chunk_name(&self, chunk: WadHash) -> String {
         self.paths
             .path(chunk)
             .unwrap_or_else(|| format!("{:016x}", chunk.0))
     }
 
-    /// Reads the game's copy of `chunk`: the one in the first archive that holds it. Returns
-    /// `None` for a chunk no archive holds.
+    /// Reads the decompressed data of `chunk` from the first archive that contains it, in
+    /// archive name order. Returns `None` if no archive contains the chunk.
     pub fn chunk(&self, chunk: WadHash) -> Result<Option<Vec<u8>>> {
         match self.index.row(chunk) {
             Some(row) => self.read(row.first_holder(), chunk).map(Some),
@@ -108,6 +109,7 @@ impl Game {
         }
     }
 
+    /// Reads the decompressed data of `chunk` from `archive`. Mounts the archive on first use.
     fn read(&self, archive: ArchiveId, chunk: WadHash) -> Result<Vec<u8>> {
         let name = &self.index.archive(archive).name;
         let mut archives = self.archives.borrow_mut();
@@ -124,10 +126,11 @@ impl Game {
             }
         };
 
-        // The index says the archive holds the chunk. One that does not has changed since.
+        // The index lists this chunk in this archive. If the archive does not contain it, the
+        // archive was modified after the index was validated.
         let entry = *wad.chunks().get(chunk).ok_or_else(|| {
             miette::miette!(
-                "{name} no longer holds {}. The game changed while it was read",
+                "{name} does not contain {}. The archive changed after it was indexed",
                 self.chunk_name(chunk)
             )
         })?;
@@ -138,9 +141,10 @@ impl Game {
         Ok(data.into_vec())
     }
 
-    /// Returns the index of every bin object of the game with the chunks that declare it.
+    /// Returns the object index, which maps each bin object to the chunks that declare it.
     ///
-    /// The first call reads the cached index, or reads every bin of the game to build it.
+    /// The first call loads the index from the cache. If the cache is missing or stale, it builds
+    /// the index by reading every bin chunk of the game, then saves it.
     pub fn objects(&self) -> &ObjectIndex {
         self.objects.get_or_init(|| {
             let cache = self.index_dir.join(OBJECT_INDEX_FILE);
@@ -148,24 +152,26 @@ impl Game {
                 Ok(objects) => objects,
                 Err(error) => {
                     if !error.is_missing_file() {
-                        tracing::debug!("The object index is built again: {error}");
+                        tracing::debug!("Rebuilding the object index: {error}");
                     }
                     tracing::info!(
-                        "Indexing the bin objects of {}. This is done once for each game patch.",
+                        "Building the object index of {}. It is rebuilt after each game patch.",
                         self.dir
                     );
                     let mut options = BuildOptions::default();
                     if self.paths.is_loaded() {
                         options.resolver = Some(&self.paths);
                     }
+                    // `build_with` fails only if the `called_off` callback cancels the build.
+                    // No callback is set.
                     let objects = ObjectIndex::build_with(&self.index, &options)
-                        .expect("a build that is never called off finishes");
+                        .expect("the build is not cancellable");
                     if let Err(error) = objects.save(&cache) {
-                        tracing::warn!("The object index was not cached: {error}");
+                        tracing::warn!("Failed to save the object index cache: {error}");
                     }
                     let stats = objects.stats();
                     tracing::info!(
-                        "Indexed {} objects of {} bins in {:.1} s",
+                        "Indexed {} objects from {} bins in {:.1} s",
                         objects.len(),
                         stats.bins,
                         stats.elapsed.as_secs_f32()
@@ -176,7 +182,7 @@ impl Game {
         })
     }
 
-    /// Lists the chunks that declare `object`, in archive order, each one once.
+    /// Returns the chunks that declare `object`, deduplicated, in object index order.
     pub fn declaring_chunks(&self, object: BinHash) -> Vec<WadHash> {
         let mut chunks = Vec::new();
         for declaration in self.objects().declarations(object) {
@@ -187,8 +193,8 @@ impl Game {
         chunks
     }
 
-    /// Reads the game's copy of `object`: the one in the first chunk that declares it. Returns
-    /// `None` for an object no chunk declares.
+    /// Reads `object` from the first chunk that declares it, in object index order. Returns
+    /// `None` if no chunk declares the object.
     pub fn object(&self, object: BinHash) -> Result<Option<BinObject>> {
         let Some(declaration) = self.objects().declarations(object).first() else {
             return Ok(None);
@@ -221,8 +227,8 @@ impl Game {
     }
 }
 
-/// Resolves the game directory `dir` names: itself, or the `Game` directory in it when `dir` is
-/// the directory of the whole installation.
+/// Returns `dir/Game` if `dir` has no `DATA/FINAL` directory and `dir/Game` has one. Otherwise
+/// returns `dir`.
 fn game_dir(dir: &Utf8Path) -> Utf8PathBuf {
     let nested = dir.join("Game");
     match !dir.join(ARCHIVES_DIR).is_dir() && nested.join(ARCHIVES_DIR).is_dir() {
@@ -231,8 +237,8 @@ fn game_dir(dir: &Utf8Path) -> Utf8PathBuf {
     }
 }
 
-/// Returns where the indexes of the game at `dir` are cached: a directory of its own, next to
-/// the hashtable cache every LeagueToolkit tool shares.
+/// Returns the default index cache directory for the game at `dir`:
+/// `<user data dir>/LeagueToolkit/game-index/<hash of the absolute game path>`.
 fn default_index_dir(dir: &Utf8Path) -> Result<Utf8PathBuf> {
     let base = directories::BaseDirs::new().ok_or_else(|| {
         miette::miette!("Could not find the user data directory; pass --index-dir")
@@ -244,7 +250,8 @@ fn default_index_dir(dir: &Utf8Path) -> Result<Utf8PathBuf> {
     let root = Utf8Path::from_path(root)
         .ok_or_else(|| miette::miette!("The user data directory is not UTF-8; pass --index-dir"))?;
 
-    // Two game directories never share a cache, which would be built again on every switch.
+    // Each game directory gets its own cache directory. With a shared one, switching between
+    // two installations would invalidate and rebuild the cache every time.
     let absolute = std::path::absolute(dir)
         .map(|absolute| absolute.to_string_lossy().into_owned())
         .unwrap_or_else(|_| dir.to_string());
@@ -256,7 +263,7 @@ fn default_index_dir(dir: &Utf8Path) -> Result<Utf8PathBuf> {
 
 #[cfg(test)]
 pub mod testing {
-    //! A game directory with archives written for a test.
+    //! Test fixture: a temporary game directory with archives built by `ltk_wad`.
 
     use std::{collections::BTreeMap, io::Write as _};
 
@@ -280,7 +287,8 @@ pub mod testing {
             }
         }
 
-        /// Writes the archive `name`, under `DATA/FINAL`, holding `chunks` as paths with bytes.
+        /// Writes the archive `DATA/FINAL/<name>` containing `chunks`, given as
+        /// `(chunk path, data)` pairs.
         pub fn archive(&self, name: &str, chunks: &[(&str, &[u8])]) {
             let path = self.root.join("Game").join(ARCHIVES_DIR).join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -307,7 +315,7 @@ pub mod testing {
             std::fs::write(path, out.into_inner()).unwrap();
         }
 
-        /// Opens the game, with its indexes cached inside the installation.
+        /// Opens the game with the index cache in `<root>/index`.
         pub fn open(&self) -> Game {
             Game::open(
                 &self.root,
@@ -339,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chunk_is_read_from_the_first_archive_that_holds_it() {
+    fn chunk_reads_from_first_archive_containing_it() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/shared.bin", &bin(1, 10))]);
         installation.archive("B.wad.client", &[("data/shared.bin", &bin(1, 20))]);
@@ -354,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn an_object_is_found_through_the_chunks_that_declare_it() {
+    fn object_lookup_uses_declaring_chunks() {
         let installation = Installation::new();
         installation.archive(
             "A.wad.client",
@@ -382,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn the_indexes_are_cached_and_read_back() {
+    fn indexes_are_saved_and_reloaded_from_cache() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/one.bin", &bin(1, 10))]);
 
@@ -409,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_without_archives_is_not_a_game() {
+    fn open_fails_without_archive_directory() {
         let dir = tempfile::tempdir().unwrap();
         let dir = Utf8Path::from_path(dir.path()).unwrap();
         let error = Game::open(dir, Some(&dir.join("index")), WadPaths::default())

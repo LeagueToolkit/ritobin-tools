@@ -10,7 +10,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
-- **Game-data declarations**: check a manifest of bin edits, apply it to the installed game's bins, and print values the way a manifest writes them
+- **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
 - **Windows Explorer** right-click menu, and files dropped on the executable
 - Works on Windows, Linux and macOS
@@ -244,65 +244,69 @@ A bin uses four tables, and `--table` takes their short names:
 
 ### gamedata
 
-Works with [game-data declarations](https://wiki.leaguetoolkit.dev/reference/mod-packages/game-data/): a manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`) of edits to the game's bins, as a LeagueToolkit mod carries it. The alias is `gd`.
+Validates, applies and renders [game-data declarations](https://wiki.leaguetoolkit.dev/reference/mod-packages/game-data/). A manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`) lists edits to the game's bins. It is the format LeagueToolkit mods use. The command alias is `gd`.
 
 ```yaml
 version: 1
 modules:
-  # Edits to one bin
+  # Edits one bin
   - target: data/characters/teemo/skins/skin0.bin
     +links: [data/mods/example.bin]
     Characters/Teemo/Skins/Skin0:
       skinMeshProperties.selfIllumination: 0.25
       +skinAudioProperties.tagEventList: [Example]
-  # Edits to an entry, in every bin of the game that declares it
+  # Edits an entry in every game bin that declares it
   - entries:
       Characters/Teemo/Skins/Skin0:
         armorMaterial: Metal
 ```
 
 ```bash
-# Check the manifest alone
+# Validate the manifest only
 ritobin-tools gamedata check ./layer --no-game
 
-# Check it against the game: what would change, and what would not apply
+# Dry-run the manifest against the game and print the report
 ritobin-tools gamedata check ./layer --game-dir "C:/Riot Games/League of Legends"
 
-# Apply it to the game's bins and write the edited bins, each at its path in the game
+# Apply the manifest and write each modified bin at its game path under ./out
 ritobin-tools gamedata apply ./layer -o ./out
 
-# Print an entry of the game, or one value of it, the way a manifest writes it
+# Print a game entry, or one of its values, as manifest YAML
 ritobin-tools gamedata render Characters/Teemo/Skins/Skin0
 ritobin-tools gamedata render Characters/Teemo/Skins/Skin0:skinMeshProperties.texture
 
-# The same from a file instead of the game
+# Print an entry from a file
 ritobin-tools gamedata render Characters/Teemo/Skins/Skin0 --bin skin0.bin
 ```
 
 Common flags:
 
-- `<MANIFEST>`: the manifest file, or the directory it is in. Source files and override files are read relative to it
-- `--game-dir <DIR>`: the `Game` directory of an installation, or the directory that holds it. Defaults to `game_dir` in the config
-- `--index-dir <DIR>`: where the indexes of the game are cached, in place of the user's data directory
-- `-f, --format <table|json>` on `check` and `apply`: how to print the report
+- `<MANIFEST>`: path to the manifest file or to the directory that contains it. Source files and override files are resolved relative to the manifest directory
+- `--game-dir <DIR>`: path to the `Game` directory of an installation, or to its parent directory. Defaults to `game_dir` from the config
+- `--index-dir <DIR>`: directory for the game index cache. Defaults to a directory under the user data directory
+- `-f, --format <table|json>` on `check` and `apply`: format of the report
 - `-o, --output <DIR>`, `-t, --to <bin|rito>`, `--ext`, `-k` and the text layout flags on `apply`
 
-The game is only read. `apply` writes the edited bins under `--output`, as files a mod can ship. A bin no edit applied to is not written.
+How a manifest is applied:
 
-The base of a bin is the game's copy: the one in the first archive that holds it. Modules apply in manifest order, each over what the ones before it left. A reference (`!ref <entry>:<path>`) reads the game's copy of the entry it names. An override file is a `PTCH` file with the `.ptch` extension, which `diff --patch` writes:
+- The game is never modified. `apply` writes the modified bins under `--output`. A bin with no applied edit is not written.
+- The initial content of a bin is the game's copy, read from the first archive that contains it.
+- Modules are applied in manifest order. When several modules target the same bin, each one is applied to the output of the previous one.
+- A reference (`!ref <entry>:<path>`) is resolved against the game's copy of the entry.
+- An override file is a `PTCH` file with the `.ptch` extension. `diff --patch` writes one:
 
 ```bash
 ritobin-tools diff base.bin edited.bin --patch ./layer/edited.ptch
 ```
 
-`check` with a game and `apply` print the bins the manifest edits, with a count of what applied, and every edit that did not apply. Both exit with 1 when one did not. The `kind` and `reason` of a problem in the `json` report are the codes of `ltk_game_data`, which LTK Manager reports too.
+The report lists each targeted bin with the number of applied changes, and each edit that was skipped. `check` with a game and `apply` exit with 1 if the report contains a problem. In the `json` report, the `kind` and `reason` fields use the diagnostic codes of `ltk_game_data`, the same codes LTK Manager reports.
 
-Finding the bins that declare an entry, and the entry a reference names, needs an index of every bin object of the game. It is built the first time it is needed and after each game patch, which takes a while, and is cached under `LeagueToolkit/game-index` in the user's data directory.
+`entries` modules and references require the object index, which maps every bin object of the game to the chunks that declare it. The index is built on first use and rebuilt after a game patch. The build reads every bin chunk of the game and takes tens of seconds. The index is cached under `LeagueToolkit/game-index` in the user data directory.
 
-What this version does not do:
+Limitations:
 
-- It reads no class schema. A property is typed by the value the bin already has for it, so an edit that adds a property the bin does not have is reported as `untypable`, and an object cannot be made from a class. An object can be cloned.
-- It applies one manifest to the game. It does not layer several mods, and it does not read a bin from a mod's own files.
+- No class schema is loaded. The type of a property is taken from its existing value in the bin. An edit that adds a property missing from the bin is skipped as `untypable`. An object constructed from a class is skipped as `unknownClass`. Cloning an object is supported.
+- Only one manifest is applied, and only to the game's copy of each bin. Layering several mods and reading a bin from mod content are not supported.
 
 ### config
 
@@ -343,7 +347,7 @@ Settings are read from `ritobin-tools.toml` next to the executable, or from the 
 # Hashtable cache directory. Leave it out to use the shared cache.
 hashtable_dir = "D:/hashes"
 
-# The game the gamedata commands read.
+# Game directory used by the gamedata commands.
 game_dir = "C:/Riot Games/League of Legends"
 
 # How ritobin text is laid out.
@@ -378,6 +382,8 @@ cargo test
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
+
+[AGENTS.md](AGENTS.md) has the writing rules for comments, test names, messages and docs.
 
 ## License
 

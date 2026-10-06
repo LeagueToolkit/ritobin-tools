@@ -1,9 +1,8 @@
-//! Game-data declarations: a manifest of edits to the game's bins, and what applying it to the
-//! installed game gives.
+//! Applies game-data declarations to the installed game.
 //!
-//! The manifest format and the edits themselves are `ltk_game_data`'s. This module finds the bins
-//! the edits are about in the game, runs the edits over them in manifest order, and keeps what
-//! did not apply.
+//! `ltk_game_data` defines the manifest format and implements the edits. This module resolves
+//! each module of a manifest to the game chunks it targets, applies the edits to those chunks in
+//! manifest order, and collects a diagnostic for every edit that was skipped.
 
 use std::{cell::RefCell, collections::HashMap};
 
@@ -20,13 +19,13 @@ use thiserror::Error;
 
 use crate::game::Game;
 
-/// A manifest with the directory its source and override files are read from.
+/// A loaded manifest and the directory its source and override files are resolved against.
 pub struct Layer {
     dir: Utf8PathBuf,
     pub declarations: Declarations,
 }
 
-/// A manifest or source file that does not load, shown at the place the loader names.
+/// A manifest or source file load error, with the source span reported by the loader.
 #[derive(Debug, Error, Diagnostic)]
 #[error("{message}")]
 struct ManifestProblem {
@@ -38,7 +37,7 @@ struct ManifestProblem {
 }
 
 impl Layer {
-    /// Loads the manifest at `path`, or the one in the directory `path`.
+    /// Loads the manifest at `path`. If `path` is a directory, loads the manifest file in it.
     pub fn load(path: &Utf8Path) -> Result<Self> {
         let (dir, name) = match path.is_dir() {
             true => (path.to_owned(), manifest_in(path)?),
@@ -54,7 +53,8 @@ impl Layer {
             }
         };
 
-        // What was read, by the name the loader knows it under, for showing a problem in it.
+        // File contents keyed by the document name the loader uses. A load error contains the
+        // name of its document, and the matching text is attached to the error as source code.
         let texts: RefCell<HashMap<String, String>> = RefCell::default();
         let read = |name: &str| {
             let text = read_inside(&dir, name)
@@ -74,7 +74,8 @@ impl Layer {
                 (Some(text), Some(span)) => {
                     let start = span.start.min(text.len());
                     let end = span.end.clamp(start, text.len());
-                    // A parser's statement goes on to quote the text, which the label shows.
+                    // A syntax error message has a source excerpt after its first line. Only the
+                    // first line is used, because the label already shows the source.
                     let statement = error.kind.to_string();
                     miette::Report::new(ManifestProblem {
                         message: statement.lines().next().unwrap_or_default().to_owned(),
@@ -89,13 +90,14 @@ impl Layer {
         Ok(Self { dir, declarations })
     }
 
-    /// Reads the layer's file at the layer-relative `path`.
+    /// Reads the file at the layer-relative `path`.
     fn read(&self, path: &str) -> Result<Vec<u8>, String> {
         read_inside(&self.dir, path)
     }
 }
 
-/// Finds the manifest of the layer directory `dir`, which must hold exactly one.
+/// Returns the name of the manifest file in `dir`. Fails if `dir` contains no manifest file or
+/// more than one.
 fn manifest_in(dir: &Utf8Path) -> Result<String> {
     let found: Vec<&str> = MANIFEST_NAMES
         .into_iter()
@@ -104,17 +106,17 @@ fn manifest_in(dir: &Utf8Path) -> Result<String> {
     match found.as_slice() {
         [name] => Ok((*name).to_owned()),
         [] => miette::bail!(
-            "{dir} has no manifest. One is named {}",
+            "{dir} contains no manifest file. Expected one of: {}",
             MANIFEST_NAMES.join(", ")
         ),
         several => miette::bail!(
-            "{dir} has several manifests ({}), and a layer has one",
+            "{dir} contains more than one manifest file: {}",
             several.join(", ")
         ),
     }
 }
 
-/// Reads `dir/path`, refusing a path that leads out of `dir`.
+/// Reads `dir/path`. Fails if `path` resolves to a location outside `dir`.
 fn read_inside(dir: &Utf8Path, path: &str) -> Result<Vec<u8>, String> {
     let file = dir.join(path);
     let inside = |file: &Utf8Path| -> std::io::Result<bool> {
@@ -122,72 +124,73 @@ fn read_inside(dir: &Utf8Path, path: &str) -> Result<Vec<u8>, String> {
     };
     match inside(&file) {
         Ok(true) => std::fs::read(&file).map_err(|error| error.to_string()),
-        Ok(false) => Err("the path leads out of the manifest's directory".to_owned()),
+        Ok(false) => Err("the path resolves outside the manifest directory".to_owned()),
         Err(error) => Err(error.to_string()),
     }
 }
 
-/// What the edits of a manifest changed in one bin, counted over every edit.
+/// Counts of the changes applied to one bin, summed over all edits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Changes {
-    /// Records of override files that applied.
+    /// Override file records applied.
     pub records: usize,
-    /// Objects created, removed, or changed by an override file.
+    /// Objects created or removed, plus objects changed by an override file.
     pub objects: usize,
-    /// Property edits that applied.
+    /// Property edits applied.
     pub properties: usize,
     pub links_added: usize,
     pub links_removed: usize,
 }
 
 impl Changes {
+    /// Returns `true` if any count is nonzero.
     pub fn any(&self) -> bool {
         *self != Self::default()
     }
 }
 
-/// One bin of the game the manifest edits, after every edit.
+/// A game bin targeted by the manifest, with the result of applying all edits to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditedBin {
     pub chunk: WadHash,
-    /// The target as the manifest spells it, or the name of the chunk for a bin an `entries`
-    /// module reached.
+    /// The target string from the manifest. For a bin resolved from an `entries` module, the
+    /// chunk name.
     pub target: String,
-    /// The bin with every edit that applied. The game's own bytes when none did.
+    /// The bin after all applied edits. Equal to the game's bytes if no edit applied.
     pub bytes: Vec<u8>,
     pub changes: Changes,
 }
 
-/// An edit, or a whole module, that did not apply.
+/// A diagnostic for an edit or a module that was not applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Problem {
-    /// The position of the module in the manifest, from zero.
+    /// Zero-based index of the module in the manifest.
     pub module: usize,
     pub module_name: Option<String>,
-    /// The target or the entry the problem is about.
+    /// The target or entry name the diagnostic refers to.
     pub target: String,
-    /// The position of the edit in its module, from zero.
+    /// Zero-based index of the edit in its module.
     pub edit: Option<usize>,
-    /// The code of the problem, as `ltk_game_data` and the mod tools name it.
+    /// The diagnostic kind code. `ltk_game_data` and `ltk_overlay` use the same codes.
     pub kind: String,
-    /// The link, override file, object or signed property key the problem is about.
+    /// The link path, override path, object name or signed property key the diagnostic refers to.
     pub path: Option<String>,
-    /// Why a property, record or object edit was skipped.
+    /// The skip reason code of a property, record or object edit.
     pub reason: Option<String>,
     pub message: String,
 }
 
-/// What applying a manifest to the game gives.
+/// The result of applying a manifest to the game.
 #[derive(Debug, Default)]
 pub struct Outcome {
-    /// The bins the manifest edits, in the order it first names them.
+    /// The targeted bins, in order of first reference in the manifest.
     pub bins: Vec<EditedBin>,
     pub problems: Vec<Problem>,
-    /// Whether a property edit was skipped for want of a type.
+    /// `true` if any property edit was skipped with the `untypable` reason.
     pub untypable: bool,
 }
 
-/// The edits one module makes to one chunk.
+/// The edits of one module for one chunk.
 struct Application {
     module: usize,
     chunk: WadHash,
@@ -195,12 +198,15 @@ struct Application {
     edits: Vec<Edit>,
 }
 
-/// Applies every module of `layer` to the game's copy of the bins it names, in manifest order.
+/// Applies every module of `layer` to the game, in manifest order.
 ///
-/// The base of a bin is the game's copy, and each module reads what the modules before it left.
-/// An `entries` module edits its entries in every chunk of the game that declares them. No class
-/// schema is consulted: a property is typed by the value the bin already has for it, so an edit
-/// of a property the bin does not have is a problem, as is an object made from a class.
+/// The initial content of each bin is the game's copy. When several modules target the same bin,
+/// each module is applied to the output of the previous one. An `entries` module is applied to
+/// every game chunk that declares the entry.
+///
+/// Edits are applied with `NoSchema`, so the type of a property comes from its existing value in
+/// the bin. An edit that adds a property missing from the bin is skipped as `untypable`, and an
+/// object constructed from a class is skipped as `unknownClass`.
 pub fn apply(layer: &Layer, game: &Game) -> Result<Outcome> {
     let mut outcome = Outcome::default();
     let mut bins: IndexMap<WadHash, EditedBin> = IndexMap::new();
@@ -230,7 +236,7 @@ pub fn apply(layer: &Layer, game: &Game) -> Result<Outcome> {
                     None => {
                         outcome.problems.push(problem(
                             "targetSkipped",
-                            format!("The game has no {}", application.target),
+                            format!("{} was not found in the game", application.target),
                         ));
                         continue;
                     }
@@ -265,7 +271,8 @@ pub fn apply(layer: &Layer, game: &Game) -> Result<Outcome> {
             };
 
             for diagnostic in &applied.diagnostics {
-                // Without a schema every property is typed from the bin, so this says nothing.
+                // With `NoSchema` the type of every property is taken from the bin, so this
+                // diagnostic is emitted for every applied property edit. It is not reported.
                 if diagnostic.kind == ApplyDiagnosticKind::SchemaFallback {
                     continue;
                 }
@@ -329,14 +336,14 @@ fn lower(
                         kind: "entryUnresolved".to_owned(),
                         path: None,
                         reason: None,
-                        message: format!("No bin of the game declares {name}"),
+                        message: format!("Entry {name} is not declared by any game bin"),
                     });
                 }
                 if let [_, _, ..] = chunks.as_slice() {
                     let names: Vec<String> =
                         chunks.iter().map(|chunk| game.chunk_name(*chunk)).collect();
                     tracing::info!(
-                        "{name} is declared by {} bins and is edited in each: {}",
+                        "{name} is declared by {} bins. The edit is applied to each: {}",
                         names.len(),
                         names.join(", ")
                     );
@@ -364,14 +371,15 @@ fn lower(
                 kind: "unknown".to_owned(),
                 path: None,
                 reason: None,
-                message: "This version does not know the selector of the module".to_owned(),
+                message: "Unsupported module selector".to_owned(),
             });
             Vec::new()
         }
     }
 }
 
-/// Returns the code a value of `ltk_game_data` serializes as.
+/// Returns the string `value` serializes to. `ltk_game_data` serializes its diagnostic kind and
+/// skip reason enums as camelCase codes.
 fn code(value: &impl Serialize) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(code)) => code,
@@ -379,7 +387,7 @@ fn code(value: &impl Serialize) -> String {
     }
 }
 
-/// Returns why the property, record or object edit of `diagnostic` was skipped.
+/// Returns the skip reason code of `diagnostic`, if it carries a property, record or object skip.
 fn reason(diagnostic: &ApplyDiagnostic) -> Option<String> {
     if let Some(property) = &diagnostic.property {
         return Some(code(&property.reason));
@@ -405,7 +413,7 @@ mod tests {
         game::testing::Installation,
     };
 
-    /// Hashes `name` the way a manifest's names reach a bin: FNV-1a of the lowercased name.
+    /// Returns the bin hash of `name`: FNV-1a of the lowercased name.
     fn hash(name: &str) -> BinHash {
         BinHash(
             name.to_ascii_lowercase()
@@ -416,7 +424,8 @@ mod tests {
         )
     }
 
-    /// Builds a bin with one object named `entry` that has a `size` and a `tags` list.
+    /// Builds a bin with one object named `entry`, which has an `f32` property `size` and a
+    /// string list property `tags`.
     fn skin(entry: &str, size: f32) -> Vec<u8> {
         let bin: BinFile = Bin::builder()
             .dependency("shared.bin")
@@ -454,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn a_target_module_edits_the_games_copy_of_the_bin() {
+    fn target_module_applies_edits_to_game_bin() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/skin0.bin", &skin("a/skin0", 1.0))]);
         let (_guard, layer) = layer(&[(
@@ -491,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entries_module_edits_every_bin_that_declares_the_entry() {
+    fn entries_module_applies_to_every_declaring_bin() {
         let installation = Installation::new();
         installation.archive(
             "A.wad.client",
@@ -527,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reference_reads_the_games_copy_of_another_entry() {
+    fn reference_resolves_to_game_value() {
         let installation = Installation::new();
         installation.archive(
             "A.wad.client",
@@ -550,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn an_object_is_cloned_but_not_made_from_a_class() {
+    fn clone_object_applies_and_class_object_is_skipped() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/skin0.bin", &skin("a/skin0", 1.0))]);
         let (_guard, layer) = layer(&[(
@@ -570,7 +579,8 @@ mod tests {
             values::F32::new(1.0).into()
         );
 
-        // A class is known from a schema, and none is read.
+        // Constructing an object requires `Schema::has_class` to return `true`. With `NoSchema`
+        // it returns `false`.
         let [problem] = outcome.problems.as_slice() else {
             panic!("{:?}", outcome.problems);
         };
@@ -581,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_module_reads_what_an_earlier_one_left() {
+    fn modules_on_same_bin_apply_in_order() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/skin0.bin", &skin("a/skin0", 1.0))]);
         let (_guard, layer) = layer(&[(
@@ -599,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn what_does_not_apply_is_a_problem_and_the_rest_applies() {
+    fn skipped_edits_are_reported_and_other_edits_apply() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/skin0.bin", &skin("a/skin0", 1.0))]);
         let (_guard, layer) = layer(&[(
@@ -614,7 +624,8 @@ mod tests {
             .iter()
             .map(|problem| (problem.kind.as_str(), problem.reason.as_deref()))
             .collect();
-        // A property the bin does not have has no type without a schema, pinned or not.
+        // Both properties are missing from the bin. With `NoSchema` a missing property is
+        // `untypable`, including the one with a type pin.
         assert_eq!(
             kinds,
             [
@@ -627,7 +638,7 @@ mod tests {
         assert_eq!(outcome.problems[0].path.as_deref(), Some("unknownField"));
         assert_eq!(outcome.problems[1].path.as_deref(), Some("pinned"));
 
-        // The bin the game lacks is not among the edited ones.
+        // `data/missing.bin` is not in the game, so it is not in `outcome.bins`.
         let [bin] = outcome.bins.as_slice() else {
             panic!("{} bins", outcome.bins.len());
         };
@@ -639,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_that_does_not_load_is_shown_where_it_is_wrong() {
+    fn invalid_manifest_fails_to_load() {
         let (_guard, layer) = layer(&[(
             "game_data.yaml",
             "version: 1\nmodules:\n  - target: data/skin0.bin\n    bogus: 1\n",
@@ -649,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_file_outside_the_layer_is_refused() {
+    fn read_inside_rejects_path_outside_dir() {
         let (_guard, layer) = layer(&[
             ("layer/game_data.yaml", "version: 1\nmodules: []\n"),
             ("outside.yaml", "version: 1\n+links: [x.bin]\n"),
@@ -658,15 +669,20 @@ mod tests {
         let dir = Utf8Path::from_path(_guard.path()).unwrap();
         assert_eq!(
             read_inside(&dir.join("layer"), "../outside.yaml"),
-            Err("the path leads out of the manifest's directory".to_owned())
+            Err("the path resolves outside the manifest directory".to_owned())
         );
         assert!(read_inside(&dir.join("layer"), "game_data.yaml").is_ok());
     }
 
     #[test]
-    fn a_directory_needs_exactly_one_manifest() {
+    fn directory_must_contain_exactly_one_manifest() {
         let (_guard, none) = layer(&[("notes.txt", "")]);
-        assert!(none.err().unwrap().to_string().contains("has no manifest"));
+        assert!(
+            none.err()
+                .unwrap()
+                .to_string()
+                .contains("contains no manifest file")
+        );
 
         let (_guard, several) = layer(&[
             ("game_data.yaml", "version: 1\nmodules: []\n"),
@@ -677,7 +693,7 @@ mod tests {
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("several manifests")
+                .contains("more than one manifest file")
         );
     }
 }

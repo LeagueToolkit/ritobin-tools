@@ -104,12 +104,12 @@ impl Context {
         BinHashes::load(store.as_ref(), self.extra_hashtables.as_deref())
     }
 
-    /// Opens the table of game paths, which names the chunks of the game's archives.
+    /// Opens the Mimir `game` table, which resolves chunk hashes to paths.
     pub fn wad_paths(&self) -> WadPaths {
         WadPaths::load(self.store().ok().as_ref())
     }
 
-    /// Every name a value written as a game-data declaration carries.
+    /// Loads the bin tables and the `game` table for rendering game-data declarations.
     pub fn game_names(&self) -> GameNames {
         GameNames {
             bins: self.hashes(),

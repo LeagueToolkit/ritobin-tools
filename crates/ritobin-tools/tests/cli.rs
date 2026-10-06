@@ -356,7 +356,8 @@ fn hashes_lookup_reads_the_extra_text_tables() {
     assert_eq!(rows[0]["name"], "Size");
 }
 
-/// Writes a game directory whose one archive holds `chunks` as paths with bytes.
+/// Writes a game directory with one archive containing `chunks`, given as `(chunk path, data)`
+/// pairs. Returns the installation directory.
 fn write_game(ws: &Workspace, chunks: &[(&str, &[u8])]) -> PathBuf {
     use std::{collections::BTreeMap, io::Write as _};
 
@@ -390,7 +391,7 @@ fn write_game(ws: &Workspace, chunks: &[(&str, &[u8])]) -> PathBuf {
 }
 
 #[test]
-fn gamedata_applies_a_manifest_and_a_saved_patch_to_the_games_bin() {
+fn gamedata_apply_writes_bin_with_edits_and_override_patch() {
     let ws = Workspace::new();
     let tables = ws.field_table();
     let base = ws.write("base.rito", BASE);
@@ -407,7 +408,7 @@ fn gamedata_applies_a_manifest_and_a_saved_patch_to_the_games_bin() {
             .arg(ws.path("index"));
     };
 
-    // A patch saved by `diff` is an override file of the manifest.
+    // Save a PTCH file with `diff --patch` and reference it from the manifest as an override.
     fs::create_dir_all(ws.path("layer")).unwrap();
     let edited = ws.write(
         "edited.rito",
@@ -460,7 +461,7 @@ fn gamedata_applies_a_manifest_and_a_saved_patch_to_the_games_bin() {
     assert!(printed.contains("Name: string = \"edited\""), "{printed}");
     assert!(printed.contains("\"c\""), "{printed}");
 
-    // The game's own copy is as it was.
+    // `apply` does not modify the game. The game still has the original value.
     let mut render = ws.tool();
     render.args(["gamedata", "render", "Characters/Test/Skins/Skin0:Name"]);
     game_args(&mut render);
@@ -481,7 +482,7 @@ fn gamedata_applies_a_manifest_and_a_saved_patch_to_the_games_bin() {
 }
 
 #[test]
-fn gamedata_check_fails_when_part_of_the_manifest_does_not_apply() {
+fn gamedata_check_exits_1_when_a_problem_is_reported() {
     let ws = Workspace::new();
     let base = ws.write("base.rito", BASE);
     ws.tool().arg("convert").arg(&base).assert().success();
@@ -515,7 +516,7 @@ fn gamedata_check_fails_when_part_of_the_manifest_does_not_apply() {
     let report = stdout(&output);
     assert!(report.contains("data/skin0.bin  1"), "{report}");
     assert!(
-        report.contains("No bin of the game declares Characters/Test/Skins/Skin9"),
+        report.contains("Entry Characters/Test/Skins/Skin9 is not declared by any game bin"),
         "{report}"
     );
     assert!(!ws.path("out").exists());

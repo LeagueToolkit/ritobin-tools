@@ -20,8 +20,8 @@ const LEGACY_CONFIG_FILE_NAME: &str = "config.toml";
 pub struct AppConfig {
     /// The hashtable cache directory. Unset means the cache every LeagueToolkit tool shares.
     pub hashtable_dir: Option<Utf8PathBuf>,
-    /// The game the `gamedata` commands read: the `Game` directory of an installation, or the
-    /// directory that holds it.
+    /// The game directory used by the `gamedata` commands: the `Game` directory of an
+    /// installation, or its parent directory.
     pub game_dir: Option<Utf8PathBuf>,
     /// How ritobin text is laid out.
     pub print_config: TextLayout,

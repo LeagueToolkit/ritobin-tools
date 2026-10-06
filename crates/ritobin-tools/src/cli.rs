@@ -101,7 +101,7 @@ pub enum Commands {
         command: ConfigCommand,
     },
 
-    /// Check and apply game-data declarations: a manifest of edits to the game's bins
+    /// Validate, apply and render game-data declarations
     #[command(name = "gamedata", visible_alias = "gd")]
     GameData {
         #[command(subcommand)]

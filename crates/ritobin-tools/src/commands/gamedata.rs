@@ -23,56 +23,58 @@ use crate::{
 
 #[derive(Subcommand, Debug)]
 pub enum GameDataCommand {
-    /// Check a game-data manifest, and what applying it to the game would do
+    /// Validate a game-data manifest and dry-run it against the game
     Check(CheckArgs),
 
-    /// Apply a game-data manifest to the game's bins and write the edited bins
+    /// Apply a game-data manifest to the game's bins and write the modified bins
     Apply(ApplyArgs),
 
-    /// Print an entry of a bin, or one value of it, the way a manifest writes it
+    /// Print a bin entry, or one of its values, as manifest YAML
     Render(RenderArgs),
 }
 
-/// Where the game is.
+/// Options that locate the game and its index cache.
 #[derive(Args, Debug, Clone)]
 pub struct GameArgs {
-    /// The game: the `Game` directory of an installation, or the directory that holds it.
-    /// Defaults to `game_dir` in the config
+    /// Path to the `Game` directory of an installation, or to its parent directory. Defaults to
+    /// `game_dir` from the config
     #[arg(long, value_name = "DIR")]
     pub game_dir: Option<Utf8PathBuf>,
 
-    /// Where the indexes of the game are cached, in place of the user's data directory
+    /// Directory for the game index cache. Defaults to a directory under the user data directory
     #[arg(long, value_name = "DIR")]
     pub index_dir: Option<Utf8PathBuf>,
 }
 
 impl GameArgs {
-    /// Returns the game directory, from the flag or the config.
+    /// Returns the game directory from `--game-dir`, falling back to the config.
     fn dir<'a>(&'a self, ctx: &'a Context) -> Option<&'a Utf8Path> {
         self.game_dir.as_deref().or(ctx.config.game_dir.as_deref())
     }
 
+    /// Opens the game. Fails if no game directory is configured.
     fn open(&self, ctx: &Context) -> Result<Game> {
         let dir = self.dir(ctx).ok_or_else(|| {
             miette::miette!(
-                "No game directory is known. Pass --game-dir, or run `ritobin-tools config set game_dir <DIR>`"
+                "No game directory is set. Pass --game-dir, or run `ritobin-tools config set game_dir <DIR>`"
             )
         })?;
         let game = Game::open(dir, self.index_dir.as_deref(), ctx.wad_paths())?;
-        tracing::debug!("Reading the game at {}", game.dir());
+        tracing::debug!("Using the game at {}", game.dir());
         Ok(game)
     }
 }
 
 #[derive(Args, Debug)]
 pub struct CheckArgs {
-    /// The manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`), or the directory it is in
+    /// Path to the manifest file (`game_data.yaml`, `.yml`, `.toml` or `.json`), or to the
+    /// directory that contains it
     pub manifest: Utf8PathBuf,
 
     #[command(flatten)]
     pub game: GameArgs,
 
-    /// Check the manifest alone, and do not read the game
+    /// Validate the manifest only. Do not read the game
     #[arg(long, conflicts_with = "game_dir")]
     pub no_game: bool,
 
@@ -82,29 +84,30 @@ pub struct CheckArgs {
 
 #[derive(Args, Debug)]
 pub struct ApplyArgs {
-    /// The manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`), or the directory it is in
+    /// Path to the manifest file (`game_data.yaml`, `.yml`, `.toml` or `.json`), or to the
+    /// directory that contains it
     pub manifest: Utf8PathBuf,
 
-    /// The directory the edited bins are written to, each at its path in the game
+    /// Output directory. Each modified bin is written at its game path under this directory
     #[arg(short, long, value_name = "DIR")]
     pub output: Utf8PathBuf,
 
     #[command(flatten)]
     pub game: GameArgs,
 
-    /// The format the edited bins are written in
+    /// Output format of the modified bins
     #[arg(short, long, value_enum, value_name = "FORMAT", default_value_t = Format::Bin)]
     pub to: Format,
 
-    /// The extension given to text output
+    /// File extension for text output
     #[arg(long = "ext", value_name = "EXT", default_value = DEFAULT_TEXT_EXTENSION)]
     pub text_extension: String,
 
-    /// Leave hashes as hex in text output instead of naming them from the hashtables
+    /// Write hashes as hex in text output. Do not resolve them with the hashtables
     #[arg(short, long)]
     pub keep_hashed: bool,
 
-    /// How to print the report
+    /// Format of the report
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 
@@ -114,25 +117,25 @@ pub struct ApplyArgs {
 
 #[derive(Args, Debug)]
 pub struct RenderArgs {
-    /// What to print: an entry (`Characters/Teemo/Skins/Skin0`, or its hash as `0x1234abcd`), or
-    /// one value of it as `<entry>:<property path>`
+    /// Entry to print, as a path (`Characters/Teemo/Skins/Skin0`) or a hash (`0x1234abcd`).
+    /// Append `:<property path>` to print one value
     #[arg(value_name = "ENTRY[:PATH]")]
     pub value: String,
 
-    /// Read the entry from this bin or ritobin text file instead of from the game
+    /// Read the entry from a bin or ritobin text file. The game is not read
     #[arg(short, long, value_name = "FILE", conflicts_with_all = ["game_dir", "index_dir"])]
     pub bin: Option<Utf8PathBuf>,
 
     #[command(flatten)]
     pub game: GameArgs,
 
-    /// Leave hashes as hex instead of naming them from the hashtables
+    /// Write hashes as hex. Do not resolve them with the hashtables
     #[arg(short, long)]
     pub keep_hashed: bool,
 }
 
-/// Runs a `gamedata` command. Returns `false` when a manifest was applied and part of it did not
-/// apply.
+/// Runs a `gamedata` command. Returns `false` if `check` or `apply` reported at least one
+/// problem.
 pub fn run(ctx: &Context, command: GameDataCommand) -> Result<bool> {
     match command {
         GameDataCommand::Check(args) => check(ctx, &args),
@@ -141,6 +144,8 @@ pub fn run(ctx: &Context, command: GameDataCommand) -> Result<bool> {
     }
 }
 
+/// Loads the manifest. If a game directory is set, also applies the manifest in memory and
+/// prints the report. Writes no files.
 fn check(ctx: &Context, args: &CheckArgs) -> Result<bool> {
     let layer = Layer::load(&args.manifest)?;
     let modules = plural(layer.declarations.modules.len(), "module");
@@ -148,7 +153,7 @@ fn check(ctx: &Context, args: &CheckArgs) -> Result<bool> {
     if args.no_game || args.game.dir(ctx).is_none() {
         if !args.no_game {
             tracing::info!(
-                "No game directory is known, so only the manifest was checked. Pass --game-dir to check it against the game."
+                "No game directory is set. Only the manifest was validated. Pass --game-dir to dry-run it against the game."
             );
         }
         report(&Outcome::default(), args.output.format)?;
@@ -159,9 +164,11 @@ fn check(ctx: &Context, args: &CheckArgs) -> Result<bool> {
     let game = args.game.open(ctx)?;
     let outcome = gamedata::apply(&layer, &game)?;
     report(&outcome, args.output.format)?;
-    Ok(summarize(&outcome, &modules, "would change"))
+    Ok(summarize(&outcome, &modules, "would modify"))
 }
 
+/// Applies the manifest to the game's bins, writes each modified bin under the output directory
+/// and prints the report.
 fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
     let layer = Layer::load(&args.manifest)?;
     let modules = plural(layer.declarations.modules.len(), "module");
@@ -174,7 +181,8 @@ fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
         _ => BinHashes::none(),
     };
     for bin in outcome.bins.iter().filter(|bin| bin.changes.any()) {
-        // Joined part by part, so the path has the separators of the platform.
+        // `output_name` uses `/`. Joining component by component produces the platform
+        // separator.
         let path = output_name(bin, &game)
             .components()
             .fold(args.output.clone(), |path, part| path.join(part));
@@ -200,16 +208,18 @@ fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
     }
 
     report(&outcome, args.format)?;
-    Ok(summarize(&outcome, &modules, "changed"))
+    Ok(summarize(&outcome, &modules, "modified"))
 }
 
-/// Chooses where an edited bin goes under the output directory: its path in the game, or its
-/// chunk hash when the path is not known or is not one to write to.
+/// Returns the output path of `bin`, relative to the output directory, with `/` separators.
+///
+/// Uses the manifest target if it is a safe relative path, then the chunk path from the
+/// hashtables. Falls back to `<chunk hash>.bin`.
 fn output_name(bin: &EditedBin, game: &Game) -> Utf8PathBuf {
     let hash_name = format!("{:016x}", bin.chunk.0);
     let is_hash = |name: &str| name.eq_ignore_ascii_case(&hash_name);
-    // Read as text, not as a path of this platform, so the tree written is the same on each: a
-    // drive letter or a backslash is refused on Linux too.
+    // The check is on the string, not on a platform path, so the output tree is identical on
+    // every platform. A drive letter or a backslash is rejected on Linux as well.
     let relative = |name: &str| {
         !is_hash(name)
             && name.split('/').all(|segment| {
@@ -241,7 +251,8 @@ struct Report<'a> {
     problems: &'a [Problem],
 }
 
-/// Prints the bins a manifest edits and what did not apply.
+/// Prints the report to standard output: one row per targeted bin with its change counts, then
+/// one row per problem.
 fn report(outcome: &Outcome, format: OutputFormat) -> Result<()> {
     let bins: Vec<BinRow> = outcome
         .bins
@@ -312,43 +323,45 @@ fn report(outcome: &Outcome, format: OutputFormat) -> Result<()> {
     write_bytes(STDIO.into(), out.as_bytes())
 }
 
-/// Logs what an application came to. Returns `false` when part of the manifest did not apply.
-fn summarize(outcome: &Outcome, modules: &str, changed: &str) -> bool {
+/// Logs a summary of `outcome`. Returns `false` if it has at least one problem.
+///
+/// `modules` is the module count as text. `modified` is the verb for the summary line:
+/// "modified" for `apply`, "would modify" for `check`.
+fn summarize(outcome: &Outcome, modules: &str, modified: &str) -> bool {
     let edited = outcome.bins.iter().filter(|bin| bin.changes.any()).count();
     for bin in outcome.bins.iter().filter(|bin| !bin.changes.any()) {
-        tracing::warn!(
-            "No edit applied to {}. It is as the game has it.",
-            bin.target
-        );
+        tracing::warn!("No edit was applied to {}. It is unchanged.", bin.target);
     }
     if outcome.untypable {
         tracing::warn!(
-            "An edit skipped as `untypable` is of a property the bin does not have. This version reads no class schema, so it cannot tell the type of a property to add."
+            "Edits skipped as `untypable` add a property that is missing from the bin. Adding a property requires a class schema, which is not supported yet."
         );
     }
 
     match outcome.problems.len() {
         0 => {
-            tracing::info!("{modules} {changed} {}", plural(edited, "bin"));
+            tracing::info!("{modules} {modified} {}", plural(edited, "bin"));
             true
         }
         problems => {
             tracing::warn!(
-                "{modules} {changed} {}, and {} did not apply",
+                "{modules} {modified} {}. {} reported.",
                 plural(edited, "bin"),
-                plural(problems, "edit")
+                plural(problems, "problem")
             );
             false
         }
     }
 }
 
+/// Prints an entry, or the value at a property path of the entry, as manifest YAML. Reads the
+/// entry from `--bin` if set, otherwise from the game.
 fn render(ctx: &Context, args: &RenderArgs) -> Result<()> {
     let (entry, path) = match args.value.contains(':') {
         true => {
             let reference = Reference::parse(&args.value).map_err(|_| {
                 miette::miette!(
-                    "`{}` is not `<entry>:<property path>`, such as `Characters/Teemo/Skins/Skin0:skinScale`",
+                    "Invalid value `{}`. Expected `<entry>:<property path>`, for example `Characters/Teemo/Skins/Skin0:armorMaterial`",
                     args.value
                 )
             })?;
@@ -356,18 +369,18 @@ fn render(ctx: &Context, args: &RenderArgs) -> Result<()> {
         }
         false => {
             let entry = EntryName::try_from(args.value.as_str())
-                .map_err(|error| miette::miette!("`{}` is not an entry: {error}", args.value))?;
+                .map_err(|error| miette::miette!("Invalid entry `{}`: {error}", args.value))?;
             (entry, None)
         }
     };
 
     let object = match &args.bin {
         Some(file) => object_of(file, entry.object_hash())?
-            .ok_or_else(|| miette::miette!("{file} has no entry {entry}"))?,
+            .ok_or_else(|| miette::miette!("Entry {entry} was not found in {file}"))?,
         None => {
             let game = args.game.open(ctx)?;
             game.object(entry.object_hash())?
-                .ok_or_else(|| miette::miette!("No bin of the game declares {entry}"))?
+                .ok_or_else(|| miette::miette!("Entry {entry} is not declared by any game bin"))?
         }
     };
 
@@ -377,16 +390,14 @@ fn render(ctx: &Context, args: &RenderArgs) -> Result<()> {
     };
     let value = match &path {
         Some(path) => {
-            let value = object
-                .resolve(path)
-                .map_err(|error| miette::miette!("{entry} has no `{}`: {error}", path.as_str()))?;
+            let value = object.resolve(path).map_err(|error| {
+                miette::miette!("Failed to resolve `{}` in {entry}: {error}", path.as_str())
+            })?;
             Value::render(value, &names)
         }
         None => entry_body(&object, &names),
     }
-    .map_err(|error| {
-        miette::miette!("{} cannot be written as a declaration: {error}", args.value)
-    })?;
+    .map_err(|error| miette::miette!("Failed to render {}: {error}", args.value))?;
 
     let mut text = value
         .to_yaml()
@@ -395,7 +406,8 @@ fn render(ctx: &Context, args: &RenderArgs) -> Result<()> {
     write_bytes(STDIO.into(), text.as_bytes())
 }
 
-/// Reads the object `hash` of the bin or ritobin text file at `path`.
+/// Reads the bin or ritobin text file at `path` and returns its object with path hash `hash`.
+/// Returns `None` if the file has no such object.
 fn object_of(path: &Utf8Path, hash: BinHash) -> Result<Option<BinObject>> {
     let document = Document::read(path, ReadOptions::default())?;
     let objects = match document.file {
@@ -405,8 +417,8 @@ fn object_of(path: &Utf8Path, hash: BinHash) -> Result<Option<BinObject>> {
     Ok(objects.get(&hash).cloned())
 }
 
-/// Renders every property of `object` as the body a manifest gives an entry: one key for each
-/// property.
+/// Renders `object` as a manifest entry body: a mapping from each property name to its rendered
+/// value. A property with no known name uses its hash as the key.
 fn entry_body(object: &BinObject, names: &GameNames) -> Result<Value, ltk_game_data::Error> {
     let mut body = IndexMap::new();
     for (field, value) in &object.properties {
@@ -456,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edited_bin_is_written_at_its_path_or_under_its_hash() {
+    fn output_name_uses_safe_path_or_chunk_hash() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/skin0.bin", &bin())]);
         let game = installation.open();
@@ -466,14 +478,14 @@ mod tests {
             "data/Skin0.bin"
         );
 
-        // A target spelled as a hash, with no hashtable to name it.
+        // The target is a chunk hash and no hashtable is loaded, so the path is unknown.
         let hash = format!("{:016x}", chunk_hash("data/skin0.bin").0);
         assert_eq!(
             output_name(&edited(&hash, "data/skin0.bin"), &game),
             format!("{hash}.bin")
         );
 
-        // A target that would be written outside the output directory.
+        // Targets that are absolute, have a drive letter, or contain `..` or a backslash.
         for target in [
             "../outside.bin",
             "/root.bin",
@@ -490,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_renders_as_a_body_of_its_properties() {
+    fn entry_body_maps_property_keys_to_values() {
         let BinFile::Prop(bin) = decode(&bin()) else {
             panic!("not a PROP bin");
         };

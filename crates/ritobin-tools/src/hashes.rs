@@ -196,14 +196,15 @@ impl FieldNames for BinHashes {
     }
 }
 
-/// Names for the chunk hashes of the game's archives, from the Mimir table of game paths.
+/// Resolves chunk hashes of the game's archives to paths, using the Mimir `game` table.
 ///
-/// Cloning is cheap: the table is a shared handle.
+/// Cloning is cheap. The table is a shared handle.
 #[derive(Clone, Default)]
 pub struct WadPaths(Option<HashDb>);
 
 impl WadPaths {
-    /// Opens the table of game paths of `store`. A cache without it names nothing.
+    /// Opens the `game` table of `store`. If `store` is `None` or the table is not installed,
+    /// returns a `WadPaths` that resolves no hash.
     pub fn load(store: Option<&HashStore>) -> Self {
         Self(
             store.and_then(|store| match store.open_shared(Table::Game) {
@@ -217,12 +218,13 @@ impl WadPaths {
         )
     }
 
-    /// Whether the table is loaded.
+    /// Returns `true` if the table is loaded.
     pub fn is_loaded(&self) -> bool {
         self.0.is_some()
     }
 
-    /// The path of `chunk`, if the table has it.
+    /// Returns the path of `chunk`. Returns `None` if the table is not loaded or has no entry
+    /// for the hash.
     pub fn path(&self, chunk: WadHash) -> Option<String> {
         Some(self.0.as_ref()?.get(chunk.0)?.into_owned())
     }
@@ -234,7 +236,8 @@ impl ltk_wad::PathResolver for WadPaths {
     }
 }
 
-/// Every name a value rendered as a game-data declaration carries.
+/// The name lookups used to render a bin value as a game-data declaration: field, hash, class
+/// and entry names from the bin tables, and file paths from the `game` table.
 #[derive(Clone, Default)]
 pub struct GameNames {
     pub bins: BinHashes,
