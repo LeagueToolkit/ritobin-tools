@@ -14,6 +14,7 @@ target/
 *.pdb
 
 # Editors
+.claude/
 .idea/
 .vscode/
 *.swp
