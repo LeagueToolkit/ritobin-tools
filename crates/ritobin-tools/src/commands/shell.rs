@@ -1,12 +1,13 @@
-//! Windows Explorer integration: a right-click menu on bins, on their text and on folders.
+//! Installs and removes the Windows Explorer context menu for `.bin` files, ritobin text files
+//! and folders.
 //!
-//! The menu is the classic kind, made of registry keys under `HKEY_CURRENT_USER\Software\Classes`,
-//! so it needs no administrator rights. On Windows 11 Explorer shows such a menu under "Show more
-//! options".
+//! The menu is a classic context menu. It is defined by registry keys under
+//! `HKEY_CURRENT_USER\Software\Classes`, so installing it does not require administrator rights.
+//! On Windows 11, Explorer shows a classic menu under "Show more options".
 //!
-//! Each class of item gets one `ritobin-tools` entry that opens a submenu. That entry is a verb
-//! with an empty `SubCommands` value, which makes Explorer read the submenu from the `shell` key
-//! under it.
+//! Each registry class gets one `ritobin-tools` verb with an empty `SubCommands` value. With that
+//! value, Explorer shows the verb as a submenu and reads the submenu entries from the `shell`
+//! subkey of the verb.
 
 use std::{fmt, io};
 
@@ -19,53 +20,57 @@ use crate::commands::output::{OutputArgs, columns, print};
 
 #[derive(Subcommand, Debug)]
 pub enum ShellCommand {
-    /// Add the ritobin-tools menu to the Explorer right-click menu of the current user
+    /// Add the ritobin-tools menu to the Explorer context menu of the current user
     Install,
 
-    /// Remove the ritobin-tools menu from the Explorer right-click menu
+    /// Remove the ritobin-tools menu from the Explorer context menu
     Uninstall,
 
-    /// Show which menu entries are installed and what they run
+    /// Show the install state and the command of each menu entry
     Status {
         #[command(flatten)]
         output: OutputArgs,
     },
 }
 
-/// Where a user's own file classes are, under `HKEY_CURRENT_USER`.
+/// The registry key of the per-user file classes, relative to `HKEY_CURRENT_USER`.
 const USER_CLASSES: &str = "Software\\Classes";
 
-/// The key of the menu under the `shell` key of a class.
+/// The name of the menu key under the `shell` key of a class.
 const MENU_KEY: &str = "ritobin-tools";
 
-/// The text of the menu in Explorer.
+/// The label of the menu in Explorer.
 const MENU_LABEL: &str = "ritobin-tools";
 
-/// Stands for the clicked item in the arguments of an [`Entry`].
+/// The placeholder for the path of the clicked item in the arguments of an [`Entry`]. Explorer
+/// replaces it with the path.
 const CLICKED: &str = "%1";
 
-/// The `CommandFlags` value that draws a line above an entry (`ECF_SEPARATORBEFORE`).
+/// The `CommandFlags` value that adds a separator line above an entry (`ECF_SEPARATORBEFORE`).
 const SEPARATOR_BEFORE: u32 = 0x20;
 
-/// The menu on one registry class.
+/// The menu of one registry class.
 struct Menu {
-    /// The class, under [`USER_CLASSES`]. A `SystemFileAssociations` class applies to an
-    /// extension whichever program opens it.
+    /// The class key, relative to [`USER_CLASSES`]. A `SystemFileAssociations` class applies to
+    /// a file extension regardless of the program associated with the extension.
     class: &'static str,
-    /// What the class is called in messages.
+    /// The name of the class in messages and in the `status` output.
     on: &'static str,
-    /// Whether the menu is put at the top of the right-click menu.
+    /// If `true`, the menu is placed at the top of the context menu.
     top: bool,
-    /// The entries of the submenu. Explorer lists them in the order of their keys.
+    /// The entries of the submenu. Explorer sorts them by key name.
     entries: &'static [Entry],
 }
 
 /// One entry of a submenu.
 struct Entry {
+    /// The name of the registry key of the entry.
     key: &'static str,
+    /// The label of the entry in Explorer.
     label: &'static str,
-    /// The arguments the tool is run with.
+    /// The command line arguments passed to the tool.
     args: &'static [&'static str],
+    /// If `true`, a separator line is drawn above the entry.
     separator_before: bool,
 }
 
@@ -83,11 +88,12 @@ const SYNC_HASHTABLES: Entry = Entry {
     separator_before: true,
 };
 
-/// Every menu the tool installs.
+/// All menus that `shell install` writes.
 ///
-/// `.bin` is the extension of many files that are not League bins, and a registry menu cannot
-/// look inside a file, so its menu is on all of them and is not put at the top. The legacy `.py`
-/// extension of ritobin text gets no menu, because it is the extension of Python source.
+/// A registry menu is selected by file extension and cannot inspect file content. The `.bin` menu
+/// therefore appears on every `.bin` file, including files that are not League bins, and it is
+/// not placed at the top. The legacy `.py` extension of ritobin text has no menu, because `.py`
+/// is also the extension of Python source files.
 const MENUS: &[Menu] = &[
     Menu {
         class: "SystemFileAssociations\\.bin",
@@ -120,7 +126,8 @@ const MENUS: &[Menu] = &[
         on: "folders",
         top: false,
         entries: &[
-            // A folder run always waits, so its count of converted files can be read.
+            // The folder entries use `--pause always`, so the console window stays open and
+            // the conversion summary can be read.
             Entry {
                 key: "convert-bin",
                 label: "Convert all .bin to .rito",
@@ -155,19 +162,19 @@ const MENUS: &[Menu] = &[
 ];
 
 impl Menu {
-    /// The key of the menu, under [`USER_CLASSES`].
+    /// Returns the registry key of the menu, relative to [`USER_CLASSES`].
     fn path(&self) -> String {
         format!("{}\\shell\\{MENU_KEY}", self.class)
     }
 
-    /// The key of one of its entries, under [`USER_CLASSES`].
+    /// Returns the registry key of `entry`, relative to [`USER_CLASSES`].
     fn entry_path(&self, entry: &Entry) -> String {
         format!("{}\\shell\\{}", self.path(), entry.key)
     }
 }
 
 impl Entry {
-    /// The command line Explorer runs for this entry.
+    /// Returns the command line that Explorer runs for the entry, with `exe` as the program.
     fn command(&self, exe: &str) -> String {
         let mut command = format!("\"{exe}\"");
         for arg in self.args {
@@ -181,6 +188,7 @@ impl Entry {
     }
 }
 
+/// Runs a `shell` command against the registry of the current user.
 pub fn run(command: ShellCommand) -> Result<()> {
     let classes = registry(
         RegKey::predef(HKEY_CURRENT_USER).create_subkey(USER_CLASSES),
@@ -190,7 +198,7 @@ pub fn run(command: ShellCommand) -> Result<()> {
     .0;
     let exe = std::env::current_exe()
         .into_diagnostic()
-        .wrap_err("Could not tell where the ritobin-tools executable is")?
+        .wrap_err("Failed to get the path of the ritobin-tools executable")?
         .to_string_lossy()
         .into_owned();
     let on: Vec<&str> = MENUS.iter().map(|menu| menu.on).collect();
@@ -199,15 +207,15 @@ pub fn run(command: ShellCommand) -> Result<()> {
         ShellCommand::Install => {
             install(&classes, &exe)?;
             tracing::info!(
-                "Added the ritobin-tools menu to the right-click menu of {}. It runs {exe}",
+                "Added the ritobin-tools menu to the context menu of {}. The entries run {exe}",
                 on.join(", ")
             );
-            tracing::info!("On Windows 11 the menu is under \"Show more options\".");
+            tracing::info!("On Windows 11, the menu is under \"Show more options\".");
         }
         ShellCommand::Uninstall => match uninstall(&classes)?.as_slice() {
             [] => tracing::info!("The ritobin-tools menu is not installed. Nothing was removed."),
             removed => tracing::info!(
-                "Removed the ritobin-tools menu from the right-click menu of {}",
+                "Removed the ritobin-tools menu from the context menu of {}",
                 removed.join(", ")
             ),
         },
@@ -230,7 +238,7 @@ pub fn run(command: ShellCommand) -> Result<()> {
 
             if rows.iter().any(|row| row.state == State::Outdated) {
                 tracing::info!(
-                    "An outdated entry runs another command than this version installs. Run `ritobin-tools shell install` to replace it."
+                    "The command of an outdated entry differs from the command this version installs. Run `ritobin-tools shell install` to replace it."
                 );
             } else if rows.iter().all(|row| row.state == State::Missing) {
                 tracing::info!(
@@ -242,18 +250,19 @@ pub fn run(command: ShellCommand) -> Result<()> {
     Ok(())
 }
 
-/// Says which key a registry call failed on.
+/// Adds the failed action and the registry key to the error of a registry call.
 fn registry<T>(result: io::Result<T>, action: &str, path: &str) -> Result<T> {
     result
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to {action} the registry key {path}"))
 }
 
-/// Writes every menu under `classes`, each entry running `exe`.
+/// Writes all menus under `classes`. Each entry runs `exe`.
 fn install(classes: &RegKey, exe: &str) -> Result<()> {
     for menu in MENUS {
         let path = menu.path();
-        // The entries of an older version would stay next to the new ones.
+        // Remove the existing menu first. Otherwise entries that an older version installed
+        // and this version no longer has would remain in the submenu.
         remove(classes, &path)?;
 
         let (key, _) = registry(classes.create_subkey(&path), "create", &path)?;
@@ -269,8 +278,8 @@ fn install(classes: &RegKey, exe: &str) -> Result<()> {
             let (key, _) = registry(classes.create_subkey(&path), "create", &path)?;
             let set = |result: io::Result<()>| registry(result, "write", &path);
             set(key.set_value("", &entry.label))?;
-            // Explorer runs the entry once for each selected item, and for no more than 15 of
-            // them unless this is set.
+            // Explorer runs the entry once for each selected item. Without this value it does
+            // so for at most 15 selected items.
             set(key.set_value("MultiSelectModel", &"Player"))?;
             if entry.separator_before {
                 set(key.set_value("CommandFlags", &SEPARATOR_BEFORE))?;
@@ -284,21 +293,22 @@ fn install(classes: &RegKey, exe: &str) -> Result<()> {
     Ok(())
 }
 
-/// Removes every menu under `classes`, and says what the ones that were there were on.
+/// Removes all menus under `classes`. Returns the class names of the menus that existed.
 fn uninstall(classes: &RegKey) -> Result<Vec<&'static str>> {
     let mut removed = Vec::new();
     for menu in MENUS {
         if remove(classes, &menu.path())? {
             removed.push(menu.on);
         }
-        // Installing made these when they were not there.
+        // `install` creates these parent keys if they do not exist. Remove them again if they
+        // are empty.
         remove_if_empty(classes, &format!("{}\\shell", menu.class));
         remove_if_empty(classes, menu.class);
     }
     Ok(removed)
 }
 
-/// Removes the key at `path` and everything under it. `false` when there was no such key.
+/// Removes the key at `path` with all its subkeys. Returns `false` if the key did not exist.
 fn remove(classes: &RegKey, path: &str) -> Result<bool> {
     match classes.delete_subkey_all(path) {
         Ok(()) => Ok(true),
@@ -307,7 +317,7 @@ fn remove(classes: &RegKey, path: &str) -> Result<bool> {
     }
 }
 
-/// Removes the key at `path` when it has no values and no keys under it.
+/// Removes the key at `path` if it has no values and no subkeys.
 fn remove_if_empty(classes: &RegKey, path: &str) {
     let empty = classes
         .open_subkey(path)
@@ -317,14 +327,15 @@ fn remove_if_empty(classes: &RegKey, path: &str) {
     }
 }
 
-/// Whether a menu entry is in the registry.
+/// The install state of a menu entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum State {
-    /// It runs the command this version installs for this executable.
+    /// The registry command equals the command this version installs for this executable.
     Installed,
-    /// It runs another command: another executable, or the arguments of another version.
+    /// The registry command differs: it has another executable path or other arguments.
     Outdated,
+    /// The entry is not in the registry.
     Missing,
 }
 
@@ -338,16 +349,18 @@ impl fmt::Display for State {
     }
 }
 
+/// One row of the `shell status` output.
 #[derive(Debug, Serialize)]
 struct StatusRow {
     on: &'static str,
     entry: &'static str,
     state: State,
-    /// The command line in the registry.
+    /// The command line stored in the registry.
     command: Option<String>,
 }
 
-/// The state of every entry of every menu under `classes`, for a tool at `exe`.
+/// Returns the state of every entry of every menu under `classes`. An entry is `Installed` if
+/// its registry command equals the command for `exe`.
 fn status(classes: &RegKey, exe: &str) -> Result<Vec<StatusRow>> {
     let mut rows = Vec::new();
     for menu in MENUS {
@@ -385,7 +398,8 @@ mod tests {
 
     const EXE: &str = "C:\\Tools\\ritobin-tools.exe";
 
-    /// A registry key of its own for one test, in place of the user's classes.
+    /// A temporary registry key that a test uses in place of the user classes key. The key is
+    /// deleted when the value is dropped.
     struct Scratch {
         path: String,
         classes: RegKey,
@@ -414,7 +428,8 @@ mod tests {
         fn drop(&mut self) {
             let user = RegKey::predef(HKEY_CURRENT_USER);
             let _ = user.delete_subkey_all(&self.path);
-            // Fails while another test still has a key here, which is the test that removes it.
+            // `delete_subkey` fails while the scratch key of another test exists. The last test
+            // to finish removes the parent key.
             let _ = user.delete_subkey("Software\\ritobin-tools-tests");
         }
     }
@@ -428,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn install_writes_a_submenu_whose_entries_run_the_executable() {
+    fn install_writes_submenu_with_entry_commands() {
         let scratch = Scratch::new();
         install(&scratch.classes, EXE).unwrap();
 
@@ -464,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn install_replaces_the_entries_of_an_earlier_install() {
+    fn install_removes_entries_of_previous_install() {
         let scratch = Scratch::new();
         let old = "Directory\\shell\\ritobin-tools\\shell\\no-longer-an-entry";
         scratch
@@ -477,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn status_tells_an_entry_of_another_executable_from_an_installed_one() {
+    fn status_reports_entry_of_other_executable_as_outdated() {
         let scratch = Scratch::new();
         assert!(
             states(&scratch, EXE)
@@ -494,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_removes_the_menus_and_the_keys_made_for_them() {
+    fn uninstall_removes_menus_and_empty_parent_keys() {
         let scratch = Scratch::new();
-        // Another program's entry on folders, which is not ours to remove.
+        // A folder menu entry of another program. `uninstall` must not remove it.
         let other = "Directory\\shell\\other-program";
         scratch.classes.create_subkey(other).unwrap();
 
@@ -522,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_runs_a_command_line_the_tool_accepts() {
+    fn entry_arguments_parse_as_valid_command_lines() {
         for menu in MENUS {
             for entry in menu.entries {
                 let args = std::iter::once("ritobin-tools")
@@ -534,7 +549,8 @@ mod tests {
                 let cli = cli::try_parse(args)
                     .unwrap_or_else(|error| panic!("{} on {}: {error}", entry.label, menu.on));
 
-                // Explorer opens a console window for the run, which closes when the run ends.
+                // Explorer runs the command in a new console window that closes on exit, so every
+                // entry must set a pause mode.
                 assert_ne!(cli.pause, PauseMode::Never, "{}", entry.label);
                 if entry.args.contains(&CLICKED) {
                     let Commands::Convert(convert) = cli.command else {
@@ -547,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn the_entries_of_a_menu_are_listed_in_the_order_explorer_shows_them() {
+    fn menu_entry_keys_are_sorted() {
         for menu in MENUS {
             let keys: Vec<&str> = menu.entries.iter().map(|entry| entry.key).collect();
             assert!(keys.is_sorted(), "{}: {keys:?}", menu.on);

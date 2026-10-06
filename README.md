@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 
-The LeagueToolkit command line tool for League of Legends `.bin` files. It converts between the binary format and ritobin text (`.rito`), shows the difference between two bins, saves that difference as a `PTCH` patch, and manages the hashtables that give hashes their names.
+The LeagueToolkit command line tool for League of Legends `.bin` files. It converts between the binary format and ritobin text (`.rito`), shows the difference between two bins, saves that difference as a `PTCH` patch, and manages the hashtables that resolve hashes to names.
 
 ## Features
 
@@ -12,7 +12,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
-- **Windows Explorer** right-click menu, and files dropped on the executable
+- **Windows Explorer** context menu, and drag-and-drop of files onto the executable
 - Works on Windows, Linux and macOS
 
 ## Installation
@@ -29,10 +29,10 @@ This will:
 
 - Download the latest release
 - Install to `%LOCALAPPDATA%\LeagueToolkit\ritobin-tools`
-- Add to your PATH automatically
-- Ask whether to add the [Explorer right-click menu](#shell)
+- Add the install directory to your PATH
+- Ask whether to add the [Explorer context menu](#shell)
 
-To answer that question ahead of time, download the script and pass `-ShellIntegration` or `-NoShellIntegration`.
+To skip the prompt, download the script and run it with `-ShellIntegration` or `-NoShellIntegration`.
 
 ### From Source
 
@@ -52,16 +52,16 @@ The binary will be available at `target/release/ritobin-tools`.
 # Download the hashtables once, so hashes are printed as names
 ritobin-tools hashes sync
 
-# Binary to text, next to the input
+# Convert binary to text. The output is written next to the input
 ritobin-tools convert skin0.bin
 # Creates skin0.rito
 
-# Text to binary
+# Convert text to binary
 ritobin-tools convert skin0.rito
 # Creates skin0.bin
 ```
 
-On Windows you can also drop files on `ritobin-tools.exe`. Each one is converted next to itself, and the window stays open when a conversion fails. For a right-click menu in Explorer, see [shell](#shell).
+On Windows, you can also drag files onto `ritobin-tools.exe`. Each file is converted, and the output is written next to it. The console window stays open if a conversion fails. For a context menu in Explorer, see [shell](#shell).
 
 ## Usage
 
@@ -72,60 +72,60 @@ ritobin-tools [GLOBAL OPTIONS] <COMMAND> [OPTIONS]
 Global options:
 
 - `-L, --verbosity <LEVEL>`: `error`, `warning`, `info` (default), `debug` or `trace`
-- `--config <FILE>`: config file to use instead of `ritobin-tools.toml` next to the executable
-- `--hashtable-dir <DIR>`: hashtable cache directory to use instead of the shared one
-- `-H, --hashtable <DIR>`: directory of extra CDragon text hashtables, see [Hashtables](#hashtables)
+- `--config <FILE>`: path to the config file. Defaults to `ritobin-tools.toml` in the directory of the executable
+- `--hashtable-dir <DIR>`: hashtable cache directory. Defaults to the shared cache directory
+- `-H, --hashtable <DIR>`: directory of additional CDragon text hashtables, see [Hashtables](#hashtables)
 
-Log messages go to standard error. Standard output carries only what a command was asked to print, so it is safe to pipe or redirect.
+Log messages are written to standard error. Standard output contains only the output of the command, so it can be piped or redirected.
 
 ### convert
 
-Converts between binary `.bin` and ritobin text. The format of an input is told by its content, not by its extension. Both kinds of bin are supported: a `PROP` bin holds objects, and a `PTCH` bin holds a patch over another bin.
+Converts between binary `.bin` and ritobin text. The input format is detected from the file content. The file extension is not used. Both kinds of bin are supported: a `PROP` bin contains objects, and a `PTCH` bin contains a patch for another bin.
 
 Common flags:
 
 - `[INPUTS]...` or `-i, --input <PATH>...`: files or directories. `-` reads standard input
-- `-o, --output <PATH>`: a file for a file input, a directory for a directory input, `-` for standard output. Needs a single input
+- `-o, --output <PATH>`: a file for a file input, a directory for a directory input, or `-` for standard output. Requires exactly one input
 - `-r, --recursive`: include the subdirectories of a directory input
-- `-t, --to <bin|rito>`: the format to write. Defaults to the opposite of the input, or to the format the output extension names
-- `--from <bin|rito>`: which files a directory input is scanned for. Defaults to the opposite of `--to`, or to `bin`
-- `--ext <EXT>`: extension for text output (default `rito`)
-- `-k, --keep-hashed`: leave hashes as hex
-- `--lenient`: convert text that has problems, leaving out what cannot be read
-- `--skip-existing`: do not overwrite an output file that exists
-- `--no-verify`: skip the read-back check of printed text, see below
+- `-t, --to <bin|rito>`: output format. Defaults to the format of the output file extension, or to the other format than the input
+- `--from <bin|rito>`: input format that a directory input is scanned for. Defaults to the other format than `--to`, or to `bin`
+- `--ext <EXT>`: file extension for text output (default `rito`)
+- `-k, --keep-hashed`: write hashes as hex
+- `--lenient`: convert text that has problems. The invalid parts are skipped
+- `--skip-existing`: do not overwrite an existing output file
+- `--no-verify`: skip the verification of printed text, see below
 - `--indent-size <N>`, `--line-width <N>` (40 to 200), `--inline-structs[=BOOL]`: text layout for this run
 
 Basic examples:
 
 ```bash
-# Choose the output path
+# Set the output path
 ritobin-tools convert skin0.bin -o out/skin0.rito
 
 # Convert every .bin in a directory tree to text
 ritobin-tools convert ./data -r
 
-# Convert every text file in a tree back to .bin, into another directory
+# Convert every text file in a directory tree to .bin, into another directory
 ritobin-tools convert ./data -r --to bin -o ./build
 
-# Write the legacy .py extension, with 2-space indentation
+# Use the legacy .py extension and 2-space indentation
 ritobin-tools convert skin0.bin --ext py --indent-size 2
 
 # Read standard input, write standard output
 ritobin-tools convert - < skin0.bin > skin0.rito
 ```
 
-A directory scan reads `.bin` as binary and `.rito`, `.ritobin` and `.py` as text. It converts one direction per run, so a folder that holds both `skin0.bin` and `skin0.rito` is never converted over itself. A `.py` file is taken only when it starts with the `#PROP_text` or `#PTCH_text` line, so Python source in the same folder is left alone.
+A directory scan selects files by extension: `.bin` for binary, and `.rito`, `.ritobin` and `.py` for text. One run converts in one direction only. In a folder that contains both `skin0.bin` and `skin0.rito`, a run therefore never overwrites one with the other. A `.py` file is included only if it starts with the `#PROP_text` or `#PTCH_text` header, so Python source files in the same folder are skipped.
 
-Text is checked before it is converted. A syntax or type error stops the conversion and is shown with the line it is on. A batch run converts the files that are valid, reports the others, and exits with 1.
+Text is validated before it is converted. A syntax error or a type error fails the conversion and is shown with its source line. A run with several inputs converts the valid files, reports the invalid files, and exits with 1.
 
-Text printed from a bin is read back and compared with the bin before it is written. The tool warns when the two are not the same, which happens for a few values the text printer does not keep as they are, such as a string that starts or ends with a space. `--no-verify` skips the check.
+Text printed from a bin is verified: the tool parses the text again and compares the result with the bin. It logs a warning if they differ. The text printer does not print a few values exactly, for example a string with a leading or trailing space. `--no-verify` skips the verification.
 
-No run writes over one of its own inputs. Giving `skin0.bin` and `skin0.rito` together is refused, because each would replace the other. So is anything that would write a file over itself: rewriting a file in its own format (`--to bin` on a bin) needs `-o`. Such a rewrite goes through the binary model, so the comments of a text file are not kept.
+A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.rito` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
 
 ### diff
 
-Shows what differs between two bins. Each side can be a `.bin` or a text file.
+Shows the difference between two bins. Each input can be a `.bin` file or a ritobin text file.
 
 ```bash
 ritobin-tools diff <BASE> <EDITED> [OPTIONS]
@@ -133,26 +133,26 @@ ritobin-tools diff <BASE> <EDITED> [OPTIONS]
 
 Common flags:
 
-- `-f, --format <FORMAT>`: how to print the difference, see below. Defaults to the format the `-o` extension names, or to `unified`
+- `-f, --format <FORMAT>`: output format, see below. Defaults to the format of the `-o` file extension, or to `unified`
 - `-o, --output <FILE>`: write the difference to a file
 - `-p, --patch <FILE>`: also save the difference as a `PTCH` patch
-- `--deletions`: put objects that are only in `BASE` on the patch's delete list
-- `-C, --context <LINES>`: context lines for `unified` (default 3)
-- `--exit-code`: exit with 1 when the bins differ, 0 when they do not, and 2 when the diff fails
+- `--deletions`: add objects that exist only in `BASE` to the delete list of the patch
+- `-C, --context <LINES>`: number of context lines for `unified` (default 3)
+- `--exit-code`: exit with 1 if the bins differ, 0 if they are identical, and 2 if the command fails
 - `--no-color`, `-k, --keep-hashed`, `--lenient`, and the text layout flags of `convert`
 
 Formats:
 
 | Format | Content |
 | --- | --- |
-| `unified` | A line diff of the two bins printed as ritobin text |
-| `summary` | The changed values, grouped by object |
-| `json` | One document: counts, every change, and what the patch holds |
-| `jsonl` | One JSON object per change, one per line |
+| `unified` | Line diff of the two bins printed as ritobin text |
+| `summary` | Changed values, grouped by object |
+| `json` | One document with the summary, all changes and the patch statistics |
+| `jsonl` | One JSON object per change, one object per line |
 | `csv` | One row per change |
 | `rito` | The `PTCH` patch as ritobin text |
 
-`unified` compares the text, so it also shows objects, properties or map entries that only changed places. The other formats compare the values and ignore their order.
+`unified` compares the printed text, so it also reports objects, properties and map entries that only changed position. The other formats compare values and ignore their order.
 
 Every format except `unified` and `rito` lists changes. A change has these fields:
 
@@ -160,10 +160,10 @@ Every format except `unified` and `rito` lists changes. A change has these field
 | --- | --- |
 | `kind` | `changed`, `added`, `removed`, `object_added`, `object_removed`, `object_replaced`, `dependency_added` or `dependency_removed` |
 | `object` | Path hash of the object, as `0x` hex |
-| `object_name` | Path of the object, when the hashtables have it |
+| `object_name` | Path of the object, if the hashtables have it |
 | `class` | Class of the object, as a name or `0x` hex |
-| `path` | Where the value is inside the object, for example `Position.UIRect.Size`, `Elements[3]` or `Lookup{"weapon"}` |
-| `type` | Ritobin type of the value, or `old -> new` when the type changed |
+| `path` | Path of the value inside the object, for example `Position.UIRect.Size`, `Elements[3]` or `Lookup{"weapon"}` |
+| `type` | Ritobin type of the value, or `old -> new` if the type changed |
 | `old`, `new` | The value in `BASE` and in `EDITED`, as ritobin text |
 
 Basic examples:
@@ -175,7 +175,7 @@ ritobin-tools diff old.bin new.bin
 # Per-object summary
 ritobin-tools diff old.bin new.bin -f summary
 
-# Machine-readable, written to a file. The extension picks the format
+# Write JSON to a file. The file extension selects the format
 ritobin-tools diff old.bin new.bin -o changes.json
 
 # Use in a script
@@ -184,35 +184,35 @@ ritobin-tools diff old.bin new.bin -f jsonl --exit-code > changes.jsonl
 
 #### Saving a diff as a patch
 
-`--patch` writes the difference as a `PTCH` file: binary when the path ends in `.bin`, text when it ends in `.rito`.
+`--patch` writes the difference as a `PTCH` file. The file is text if the path has a ritobin text extension such as `.rito`, otherwise binary.
 
 ```bash
 ritobin-tools diff base.bin edited.bin --patch edited.ptch.bin
 ```
 
-A patch is a list of records, each setting one property of one object, plus whole objects and a delete list. A few things follow from that format:
+A patch contains a list of records, a list of whole objects and a delete list. Each record sets one property of one object. This format has the following limitations:
 
-- A record names its property by path, so the patch needs the hashtables. A field with no known name cannot be addressed, and the object it is in goes into the patch whole.
+- A record addresses its property by a path of field names, so the patch requires the hashtables. If a field has no known name, a record cannot address it, and the whole object is stored in the patch.
 - A patch cannot remove a property or a map entry. It removes an object only with `--deletions`.
-- A patch cannot add a single map entry. The whole map goes into one record.
-- A list that changed goes into one record whole.
+- A patch cannot add a single map entry. The whole map is stored in one record.
+- A changed list is stored whole in one record.
 
-The tool warns when any of these applies. The `json` format lists every such place under `patch.lifted`, and `patch.exact` says whether the patch turns `BASE` into exactly `EDITED`.
+The tool logs a warning if a limitation affects the patch. The `json` format lists each affected location under `patch.lifted`. `patch.exact` is `true` if applying the patch to `BASE` produces exactly `EDITED`.
 
-Only two `PROP` bins have a structural difference. When either side is itself a `PTCH` file, use the `unified` format.
+The other formats and `--patch` require two `PROP` bins. If either input is a `PTCH` file, use the `unified` format.
 
 ### hashes
 
-Bins store names as hashes. The hashtables map those hashes back to names. ritobin-tools reads them from the Mimir cache that every LeagueToolkit tool shares.
+Bins store names as hashes. The hashtables map the hashes back to names. ritobin-tools reads the hashtables from the Mimir cache, which all LeagueToolkit tools share.
 
 ```bash
 # Download or update the tables (alias: ritobin-tools download-hashes, or dl)
 ritobin-tools hashes sync
 
-# See whether a newer release exists, without downloading
+# Check for a newer release. Downloads nothing
 ritobin-tools hashes check
 
-# List what is installed
+# List the installed tables
 ritobin-tools hashes status
 
 # Print the cache directory (alias: ritobin-tools hashtable-dir, or hd)
@@ -221,21 +221,21 @@ ritobin-tools hashes dir
 # Resolve hashes to names
 ritobin-tools hashes lookup 0x19efbfdb 9b67e9f6
 
-# Hash names, and see which tables know them
+# Compute the hash of names and list the tables that contain them
 ritobin-tools hashes hash mName SkinCharacterDataProperties
 
-# Find names that contain a text
+# Search for names that contain a text
 ritobin-tools hashes search rollover --table fields
 
-# Write a table as a CDragon text list
+# Export a table in the CDragon text format
 ritobin-tools hashes export types -o hashes.bintypes.txt
 ```
 
-`check`, `status`, `lookup`, `hash` and `search` take `-f, --format <table|json>`.
+`check`, `status`, `lookup`, `hash` and `search` accept `-f, --format <table|json>`.
 
-A bin uses four tables, and `--table` takes their short names:
+A bin uses four tables. `--table` accepts their short names:
 
-| Table | Holds |
+| Table | Contains |
 | --- | --- |
 | `entries` | Object paths |
 | `fields` | Property names |
@@ -319,7 +319,7 @@ ritobin-tools config reset
 
 ### shell
 
-Windows only. Adds a `ritobin-tools` submenu to the Explorer right-click menu:
+Windows only. Adds a `ritobin-tools` submenu to the Explorer context menu:
 
 ```powershell
 ritobin-tools shell install     # add the menu
@@ -333,24 +333,24 @@ ritobin-tools shell uninstall   # remove the menu
 | A `.rito` or `.ritobin` file | Convert to .bin |
 | A folder | Convert all .bin to .rito, Convert all .rito to .bin, Update hashtables |
 
-The folder entries include the subfolders. Each entry opens a console window. After a file conversion the window stays open only when the conversion failed, and after a folder conversion or a hashtable update it always waits for Enter.
+The folder entries include subfolders. Each entry runs in a new console window. After a file conversion, the window stays open only if the conversion failed. After a folder conversion or a hashtable update, the window always waits for Enter.
 
-The menu is installed for the current user and needs no administrator rights. It is a classic menu, so on Windows 11 it is under "Show more options". It is on every `.bin` file, because Explorer cannot tell a League bin from another file with that extension.
+The menu is installed for the current user and does not require administrator rights. It is a classic context menu, so on Windows 11 it is under "Show more options". The menu appears on every `.bin` file, because a registry menu is selected by file extension and cannot check whether a file is a League bin.
 
-The entries run the executable that installed them. Run `shell install` again after moving it. `shell status` marks the entries that run another command than the current version installs as `outdated`, and takes `-f, --format <table|json>`.
+The entries run the executable that installed them. Run `shell install` again after moving the executable. `shell status` reports an entry as `outdated` if its command differs from the command the current version installs. It accepts `-f, --format <table|json>`.
 
 ## Configuration
 
-Settings are read from `ritobin-tools.toml` next to the executable, or from the file `--config` names. The file is optional.
+Settings are read from `ritobin-tools.toml` in the directory of the executable, or from the file passed with `--config`. The file is optional.
 
 ```toml
-# Hashtable cache directory. Leave it out to use the shared cache.
+# Hashtable cache directory. Omit it to use the shared cache.
 hashtable_dir = "D:/hashes"
 
 # Game directory used by the gamedata commands.
 game_dir = "C:/Riot Games/League of Legends"
 
-# How ritobin text is laid out.
+# Layout of printed ritobin text.
 [print_config]
 indent_size = 4
 
@@ -360,20 +360,20 @@ inline_structs = false
 inline_lists = true
 ```
 
-A command line flag always wins over the config file.
+A command line flag overrides the matching config value.
 
 ## Hashtables
 
-The cache directory is chosen in this order:
+The cache directory is selected in this order:
 
 1. `--hashtable-dir`
 2. `hashtable_dir` in the config file
 3. The `MIMIR_DIR` environment variable
 4. The shared default: `%LOCALAPPDATA%\LeagueToolkit\hashes` on Windows, `~/.local/share/LeagueToolkit/hashes` on Linux, `~/Library/Application Support/LeagueToolkit/hashes` on macOS
 
-When no tables are installed the tool still works. It warns once and prints hashes as hex.
+The tool works without installed tables. It logs a warning and prints hashes as hex.
 
-To add names of your own, put CDragon text tables in a directory and pass it with `-H, --hashtable <DIR>`. The files are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`, each with one `<hex hash> <name>` per line. Their names win over the cache.
+To add your own names, put CDragon text tables in a directory and pass the directory with `-H, --hashtable <DIR>`. The file names are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`. Each file has one `<hex hash> <name>` per line. A name from these files takes precedence over the cache.
 
 ## Development
 
@@ -383,7 +383,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-[AGENTS.md](AGENTS.md) has the writing rules for comments, test names, messages and docs.
+[AGENTS.md](AGENTS.md) contains the writing rules for comments, test names, messages and docs.
 
 ## License
 

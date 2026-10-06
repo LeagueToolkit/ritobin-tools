@@ -19,19 +19,19 @@ use crate::{
     utils::{hyperlink_path, plural},
 };
 
-/// The longest value the summary prints before it cuts it.
+/// The maximum number of characters of a value printed by the `summary` format. A longer value
+/// is truncated.
 const SUMMARY_VALUE_WIDTH: usize = 100;
 
 #[derive(Args, Debug)]
 pub struct DiffArgs {
-    /// The bin the difference starts from (.bin or ritobin text)
+    /// The base bin (.bin or ritobin text)
     pub base: Utf8PathBuf,
 
-    /// The bin the difference leads to (.bin or ritobin text)
+    /// The edited bin (.bin or ritobin text)
     pub edited: Utf8PathBuf,
 
-    /// How to print the difference. Defaults to the format the output extension names, or to
-    /// `unified`
+    /// Output format. Defaults to the format of the output file extension, or to `unified`
     #[arg(short, long, value_enum, value_name = "FORMAT")]
     pub format: Option<DiffFormat>,
 
@@ -39,16 +39,16 @@ pub struct DiffArgs {
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<Utf8PathBuf>,
 
-    /// Save the difference as a PTCH patch over BASE: binary for a `.bin` path, text for a
-    /// `.rito` path
+    /// Also save the difference as a PTCH file that patches BASE. The file is text if the path
+    /// has a ritobin text extension, otherwise binary
     #[arg(short, long, value_name = "FILE")]
     pub patch: Option<Utf8PathBuf>,
 
-    /// Put objects that are in BASE and not in EDITED on the patch's delete list
+    /// Add objects that exist in BASE but not in EDITED to the delete list of the patch
     #[arg(long)]
     pub deletions: bool,
 
-    /// Lines of context around each change in the `unified` format
+    /// Number of context lines around each change in the `unified` format
     #[arg(short = 'C', long, value_name = "LINES", default_value_t = 3)]
     pub context: usize,
 
@@ -56,15 +56,15 @@ pub struct DiffArgs {
     #[arg(long)]
     pub no_color: bool,
 
-    /// Exit with 1 when the bins differ, 0 when they do not, and 2 when the diff fails
+    /// Exit with 1 if the bins differ, 0 if they are identical, and 2 if the command fails
     #[arg(long)]
     pub exit_code: bool,
 
-    /// Leave hashes as hex instead of naming them from the hashtables
+    /// Write hashes as hex. Do not resolve them with the hashtables
     #[arg(short, long)]
     pub keep_hashed: bool,
 
-    /// Read text that has problems, leaving out what cannot be read
+    /// Read text that has problems. The invalid parts are skipped
     #[arg(long)]
     pub lenient: bool,
 
@@ -74,13 +74,13 @@ pub struct DiffArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiffFormat {
-    /// A line diff of the two bins as ritobin text
+    /// Line diff of the two bins printed as ritobin text
     Unified,
-    /// The changed values, grouped by object
+    /// Changed values, grouped by object
     Summary,
-    /// One JSON document: a summary, every change, and what the patch holds
+    /// One JSON document with the summary, all changes and the patch statistics
     Json,
-    /// One JSON object per change, one per line
+    /// One JSON object per change, one object per line
     Jsonl,
     /// One row per change
     Csv,
@@ -89,6 +89,8 @@ pub enum DiffFormat {
 }
 
 impl DiffFormat {
+    /// Returns the diff format for an output file extension. Returns `None` for an unknown
+    /// extension.
     fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
             "json" => Some(Self::Json),
@@ -103,7 +105,7 @@ impl DiffFormat {
     }
 }
 
-/// Runs the diff. `true` when the two bins differ.
+/// Runs the `diff` command. Returns `true` if the two bins differ.
 pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
     let options = ReadOptions {
         lenient: args.lenient,
@@ -129,7 +131,7 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
     if let Some(patch) = &args.patch
         && patch.as_str() == STDIO
     {
-        miette::bail!("--patch needs a file, since standard output carries the difference");
+        miette::bail!("--patch requires a file path. Standard output is used for the difference");
     }
 
     let to_stdout = args.output.is_none();
@@ -153,7 +155,7 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
                 BinFile::Prop(_) => &args.edited,
             };
             miette::miette!(
-                "{patch} is a PTCH patch, and only two PROP bins have a structural difference. Use --format unified without --patch"
+                "{patch} is a PTCH file. This format and --patch require two PROP bins. Use --format unified without --patch"
             )
         })
     };
@@ -169,13 +171,13 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
                 &args.edited,
                 args.context,
             );
-            // Two bins can differ where their text does not, because the printer does not keep
-            // every value as it is.
+            // The printer does not print every value exactly, so two different bins can have
+            // identical text. Then the structural diff has changes and the text diff is empty.
             let hidden =
                 base_text == edited_text && diff.as_ref().is_some_and(|diff| !diff.is_empty());
             if hidden {
                 tracing::warn!(
-                    "The bins differ in values their text prints the same. `--format summary` lists them."
+                    "The bins differ, but their ritobin text is identical. Use `--format summary` to list the differences."
                 );
             }
             (rendered, base_text != edited_text || hidden)
@@ -227,6 +229,8 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
     Ok(differs)
 }
 
+/// Writes the patch of `diff` to `path`. The file is text if `path` has a ritobin text extension,
+/// otherwise binary. Logs a warning for each limitation that affects the patch.
 fn save_patch(
     diff: &BinDiff,
     path: &Utf8Path,
@@ -249,7 +253,7 @@ fn save_patch(
             .is_ok_and(|text| reads_back(&BinFile::Override(diff.patch.clone()), text))
     {
         tracing::warn!(
-            "The patch text does not read back as the same patch, because the printer does not keep every value as it is. Save it as a .bin instead."
+            "The patch text does not parse back to the same patch, because the printer does not print every value exactly. Save the patch as a .bin file instead."
         );
     }
     write_bytes(path, &data)?;
@@ -261,30 +265,31 @@ fn save_patch(
 
     if !diff.report.lifted.is_empty() {
         tracing::warn!(
-            "{} could not be recorded where the change is, and went into a record higher up. Such a record overwrites more than the change on any other base. `--format json` lists them.",
+            "{} could not be addressed by a patch record. Each was recorded as a larger value. Applied to a different base, such a record overwrites more than the change. Use `--format json` to list them.",
             plural(diff.report.lifted.len(), "difference")
         );
         if hashes.is_empty() {
             tracing::warn!(
-                "No hashtables are loaded. A patch record names its fields, so every changed object went into the patch whole."
+                "No hashtables are loaded. A patch record addresses a property by field name, so every changed object was recorded as a whole object."
             );
         }
     }
     if !diff.report.dependencies.is_empty() {
         tracing::warn!(
-            "EDITED links {} BASE does not, and a patch carries no dependencies",
+            "EDITED depends on {} that BASE does not depend on. A patch cannot store dependencies",
             plural(diff.report.dependencies.len(), "bin")
         );
     }
     if !diff.patch_is_exact {
         tracing::warn!(
-            "The patch does not turn BASE into EDITED exactly. A patch cannot remove a property or a map entry, and removes an object only with --deletions."
+            "Applying the patch to BASE does not produce EDITED exactly. A patch cannot remove a property or a map entry, and it removes an object only with --deletions."
         );
     }
     Ok(())
 }
 
-/// A unified line diff of two ritobin texts. Empty when they are the same.
+/// Returns the unified line diff of two ritobin texts. Returns an empty string if the texts are
+/// equal.
 fn unified(
     base: &str,
     edited: &str,
@@ -319,7 +324,8 @@ fn unified(
     out
 }
 
-/// The changes grouped by object, one line per change, with the counts at the end.
+/// Renders the `summary` format: one line per change, grouped by object, followed by the change
+/// counts.
 fn summary(diff: &BinDiff) -> String {
     let mut out = String::new();
     if diff.is_empty() {
@@ -382,6 +388,7 @@ fn summary(diff: &BinDiff) -> String {
     out
 }
 
+/// Returns the quoted object path if it is known, otherwise the object hash.
 fn object_name(change: &Change) -> String {
     match (&change.object_name, &change.object) {
         (Some(name), _) => format!("\"{name}\""),
@@ -390,12 +397,14 @@ fn object_name(change: &Change) -> String {
     }
 }
 
+/// Returns the object name followed by the class in parentheses.
 fn object_label(change: &Change) -> String {
     let class = change.class.as_deref().unwrap_or_default();
     format!("{} ({class})", object_name(change))
 }
 
-/// A value on one line: its first line when it has several, cut at [`SUMMARY_VALUE_WIDTH`].
+/// Returns the first line of `value`, truncated to [`SUMMARY_VALUE_WIDTH`] characters. Appends
+/// ` ...` if the value was shortened.
 fn one_line(value: &str) -> String {
     let mut lines = value.lines();
     let first = lines.next().unwrap_or_default();
@@ -406,6 +415,7 @@ fn one_line(value: &str) -> String {
     }
 }
 
+/// Formats the change counts of `summary` as one line.
 fn counts(summary: &Summary) -> String {
     let mut parts = vec![format!(
         "{} changed, {} added, {} removed, {} replaced",
@@ -430,17 +440,19 @@ fn counts(summary: &Summary) -> String {
     parts.join("; ")
 }
 
-/// What the patch of a diff holds, for the JSON document.
+/// The patch statistics in the JSON document.
 #[derive(Serialize)]
 struct PatchInfo {
     records: usize,
     objects: usize,
     deleted: usize,
-    /// Whether the patch applied to the base gives exactly the edit's objects.
+    /// `true` if applying the patch to the base bin produces exactly the objects of the edited
+    /// bin.
     exact: bool,
     lifted: Vec<Lifted>,
 }
 
+/// The document written by the `json` format.
 #[derive(Serialize)]
 struct JsonDiff<'a> {
     base: &'a str,
@@ -451,6 +463,7 @@ struct JsonDiff<'a> {
     patch: PatchInfo,
 }
 
+/// Renders the `json` format.
 fn json(diff: &BinDiff, hashes: &BinHashes, base: &Utf8Path, edited: &Utf8Path) -> Result<String> {
     let document = JsonDiff {
         base: base.as_str(),
@@ -471,6 +484,7 @@ fn json(diff: &BinDiff, hashes: &BinHashes, base: &Utf8Path, edited: &Utf8Path) 
     Ok(out)
 }
 
+/// Renders the `jsonl` format.
 fn jsonl(diff: &BinDiff) -> Result<String> {
     let mut out = String::new();
     for change in &diff.changes {
@@ -480,6 +494,7 @@ fn jsonl(diff: &BinDiff) -> Result<String> {
     Ok(out)
 }
 
+/// Renders the `csv` format, with a header row.
 fn csv(diff: &BinDiff) -> Result<String> {
     let mut writer = ::csv::WriterBuilder::new()
         .has_headers(false)
@@ -556,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_lists_each_change_under_its_object() {
+    fn summary_groups_changes_by_object() {
         assert_eq!(
             summary(&sample_diff()),
             "~ 0x11110001 (0xaaaa0001)\n  ~ 00000010: i32 = 1 -> 2\n  - 00000011: bool = true\n\n1 object changed, 0 added, 0 removed, 0 replaced; 1 value changed, 0 added, 1 removed\n"
@@ -564,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn the_csv_has_a_header_and_one_row_per_change() {
+    fn csv_has_header_and_one_row_per_change() {
         assert_eq!(
             csv(&sample_diff()).unwrap(),
             "kind,object,object_name,class,path,type,old,new\nchanged,0x11110001,,0xaaaa0001,00000010,i32,1,2\nremoved,0x11110001,,0xaaaa0001,00000011,bool,true,\n"
@@ -572,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn the_jsonl_has_one_object_per_change() {
+    fn jsonl_has_one_object_per_change() {
         let out = jsonl(&sample_diff()).unwrap();
         let lines: Vec<serde_json::Value> = out
             .lines()
@@ -585,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn the_json_carries_the_summary_and_the_patch() {
+    fn json_contains_summary_and_patch_statistics() {
         let out = json(
             &sample_diff(),
             &BinHashes::none(),
@@ -601,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn the_unified_diff_is_empty_for_equal_text() {
+    fn unified_is_empty_for_equal_text() {
         colored::control::set_override(false);
         let (a, b) = (Utf8Path::new("a"), Utf8Path::new("b"));
         assert_eq!(unified("x\n", "x\n", a, b, 3), "");
@@ -612,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_or_multi_line_value_is_cut_to_one_line() {
+    fn one_line_truncates_long_and_multi_line_values() {
         assert_eq!(one_line("short"), "short");
         assert_eq!(one_line("Class {\n    a: u8 = 1\n}"), "Class { ...");
         assert_eq!(
@@ -622,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn the_output_extension_names_the_format() {
+    fn from_extension_maps_output_extensions() {
         assert_eq!(DiffFormat::from_extension("json"), Some(DiffFormat::Json));
         assert_eq!(DiffFormat::from_extension("CSV"), Some(DiffFormat::Csv));
         assert_eq!(DiffFormat::from_extension("rito"), Some(DiffFormat::Rito));
@@ -630,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_patch_applies_back_onto_the_base() {
+    fn saved_patch_applied_to_base_produces_edited() {
         let (_guard, dir) = temp_dir();
         let size = BinHash::hash_str("Size");
         let named = |value: i32| {
@@ -647,7 +662,8 @@ mod tests {
         std::fs::write(&base_path, to_bin(&base.clone().into()).unwrap()).unwrap();
         std::fs::write(&edited_path, to_bin(&edited.clone().into()).unwrap()).unwrap();
 
-        // The field table is what lets the difference be a record instead of a whole object.
+        // With the field name in a hashtable, the patch has one record for the property.
+        // Without it, the patch has the whole object.
         let tables = dir.join("tables");
         std::fs::create_dir(&tables).unwrap();
         std::fs::write(
@@ -684,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_bins_do_not_differ() {
+    fn run_returns_false_for_identical_bins() {
         let (_guard, dir) = temp_dir();
         let path = dir.join("a.bin");
         std::fs::write(&path, to_bin(&bin(1, false).into()).unwrap()).unwrap();
@@ -702,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn a_patch_file_has_no_structural_difference() {
+    fn structural_format_fails_for_ptch_input() {
         let (_guard, dir) = temp_dir();
         let prop = dir.join("a.bin");
         std::fs::write(&prop, to_bin(&bin(1, false).into()).unwrap()).unwrap();
@@ -719,6 +735,6 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(error.to_string().contains("is a PTCH patch"));
+        assert!(error.to_string().contains("is a PTCH file"));
     }
 }

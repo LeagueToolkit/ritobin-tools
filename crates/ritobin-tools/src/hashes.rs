@@ -1,4 +1,4 @@
-//! Bin hash name resolution, backed by the shared Mimir hashtable cache.
+//! Resolves bin hashes and chunk hashes to names, using the shared Mimir hashtable cache.
 
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
@@ -8,7 +8,7 @@ use ltk_meta::path::FieldNames;
 use ltk_mimir_cache::{HashStore, ManifestError, OpenError, Table, ltk_hashdb::HashDb};
 use ltk_ritobin::{HashMapProvider, HashProvider};
 
-/// The Mimir tables a bin file's hashes resolve against.
+/// The Mimir tables that resolve the hashes of a bin file.
 pub const BIN_TABLES: [Table; 4] = [
     Table::BinEntries,
     Table::BinFields,
@@ -16,16 +16,16 @@ pub const BIN_TABLES: [Table; 4] = [
     Table::BinTypes,
 ];
 
-/// The GitHub repository the hashtable releases are published from.
+/// The GitHub repository that publishes the hashtable releases.
 pub const MIMIR_TABLES_REPO: &str = "LeagueToolkit/mimir-tables";
 
-/// Names for the four kinds of bin hash.
+/// Resolves the four kinds of bin hash to names.
 ///
-/// Each kind resolves against its own Mimir table. A directory of CDragon text tables can be laid
-/// over them, and its names win. A table that is not loaded resolves nothing, so its hashes stay
-/// hex.
+/// Each kind uses its own Mimir table. An optional directory of CDragon text tables takes
+/// precedence over the Mimir tables. If a table is not loaded, its lookups return `None` and the
+/// hashes are printed as hex.
 ///
-/// Cloning is cheap: the tables are shared handles.
+/// Cloning is cheap. The tables are shared handles.
 #[derive(Clone, Default)]
 pub struct BinHashes {
     entries: Option<HashDb>,
@@ -36,15 +36,15 @@ pub struct BinHashes {
 }
 
 impl BinHashes {
-    /// Resolves nothing: every hash stays hex.
+    /// Returns a `BinHashes` with no tables. Every lookup returns `None`.
     pub fn none() -> Self {
         Self::default()
     }
 
-    /// Opens the bin tables of `store`, and lays the text tables in `extra_dir` over them.
+    /// Opens the bin tables of `store` and loads the text tables in `extra_dir`.
     ///
-    /// A table that fails to open is skipped with a warning, so a missing or broken cache never
-    /// stops a conversion.
+    /// If a table fails to open, a warning is logged and the table is skipped. A missing or
+    /// corrupt cache therefore does not fail the command.
     pub fn load(store: Option<&HashStore>, extra_dir: Option<&Utf8Path>) -> Self {
         let mut hashes = Self::none();
 
@@ -57,7 +57,7 @@ impl BinHashes {
                     None
                 }
                 Err(error) => {
-                    tracing::warn!("Could not open the {table} hashtable: {error}");
+                    tracing::warn!("Failed to open the {table} hashtable: {error}");
                     None
                 }
             };
@@ -68,7 +68,7 @@ impl BinHashes {
 
             if missing_cache {
                 tracing::warn!(
-                    "No hashtables are installed, so hashes will not be named. Run `ritobin-tools hashes sync` to download them."
+                    "No hashtables are installed. Hashes are printed as hex. Run `ritobin-tools hashes sync` to download the hashtables."
                 );
             }
         }
@@ -85,7 +85,7 @@ impl BinHashes {
         hashes
     }
 
-    /// Whether no table is loaded at all.
+    /// Returns `true` if no Mimir table is loaded and the text tables have no names.
     pub fn is_empty(&self) -> bool {
         self.entries.is_none()
             && self.fields.is_none()
@@ -97,7 +97,8 @@ impl BinHashes {
                 .is_none_or(|extra| extra.total_count() == 0)
     }
 
-    /// The handle on one of the [`BIN_TABLES`], if it is loaded.
+    /// Returns the Mimir table handle for one of the [`BIN_TABLES`]. Returns `None` if the
+    /// table is not loaded.
     pub fn table(&self, table: Table) -> Option<&HashDb> {
         match table {
             Table::BinEntries => self.entries.as_ref(),
@@ -108,7 +109,7 @@ impl BinHashes {
         }
     }
 
-    /// The names of `table` that come from the text tables.
+    /// Returns the names of `table` that were loaded from the text tables.
     fn extra(&self, table: Table) -> Option<&HashMap<BinHash, String>> {
         let extra = self.extra.as_ref()?;
         match table {
@@ -120,10 +121,11 @@ impl BinHashes {
         }
     }
 
-    /// Calls `visit` with every name known for `table`: the text tables' in name order, then the
-    /// cache's in its own order, leaving out a hash the text tables already named.
+    /// Calls `visit` for every name of `table`. Names from the text tables come first, sorted
+    /// by name. Names from the Mimir table follow in table order, without the hashes that the
+    /// text tables already resolved.
     ///
-    /// `false` when nothing is loaded for the table.
+    /// Returns `false` if neither source has `table` loaded.
     pub fn for_each_name(&self, table: Table, mut visit: impl FnMut(BinHash, &str)) -> bool {
         let extra = self.extra(table).filter(|extra| !extra.is_empty());
         let db = self.table(table);
@@ -140,7 +142,7 @@ impl BinHashes {
         }
         if let Some(db) = db {
             for (hash, name) in db.iter() {
-                // A bin table is keyed by 32-bit hashes.
+                // The keys of a bin table are 32-bit hashes stored as `u64`.
                 let hash = BinHash(hash as u32);
                 if !extra.is_some_and(|extra| extra.contains_key(&hash)) {
                     visit(hash, &name);
@@ -150,7 +152,8 @@ impl BinHashes {
         true
     }
 
-    /// The name of `hash` in `table`, with the text tables consulted first.
+    /// Returns the name of `hash` in `table`. The text tables are checked first, then the
+    /// Mimir table.
     pub fn lookup(&self, table: Table, hash: BinHash) -> Option<Cow<'_, str>> {
         let extra = self.extra.as_ref().and_then(|extra| match table {
             Table::BinEntries => extra.lookup_entry(hash),
@@ -185,7 +188,7 @@ impl HashProvider for BinHashes {
     }
 }
 
-/// The field table is keyed by field alone and ignores the class.
+/// The field table has one name per field hash. The class is not used.
 impl FieldNames for BinHashes {
     fn field(&self, field: BinHash, _class: Option<BinHash>) -> Option<Cow<'_, str>> {
         self.lookup(Table::BinFields, field)
@@ -211,7 +214,7 @@ impl WadPaths {
                 Ok(db) => Some(db),
                 Err(OpenError::Manifest(ManifestError::Missing(_))) => None,
                 Err(error) => {
-                    tracing::warn!("Could not open the {} hashtable: {error}", Table::Game);
+                    tracing::warn!("Failed to open the {} hashtable: {error}", Table::Game);
                     None
                 }
             }),
@@ -280,7 +283,7 @@ pub fn parse_hash(text: &str) -> Option<BinHash> {
     u32::from_str_radix(digits, 16).ok().map(BinHash)
 }
 
-/// Writes a bin hash the way ritobin text does.
+/// Formats a bin hash as `0x` followed by 8 hex digits, as in ritobin text.
 pub fn format_hash(hash: BinHash) -> String {
     format!("0x{:08x}", hash.0)
 }
@@ -290,14 +293,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_hash_accepts_hex_with_and_without_a_prefix() {
+    fn parse_hash_accepts_hex_with_or_without_prefix() {
         assert_eq!(parse_hash("0x4a47c414"), Some(BinHash(0x4a47_c414)));
         assert_eq!(parse_hash("4A47C414"), Some(BinHash(0x4a47_c414)));
         assert_eq!(parse_hash("0X1f"), Some(BinHash(0x1f)));
     }
 
     #[test]
-    fn parse_hash_rejects_text_that_is_not_a_32_bit_hex_number() {
+    fn parse_hash_rejects_invalid_input() {
         assert_eq!(parse_hash(""), None);
         assert_eq!(parse_hash("0x"), None);
         assert_eq!(parse_hash("0x123456789"), None);
@@ -305,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_provider_names_nothing() {
+    fn empty_bin_hashes_resolve_no_hash() {
         let hashes = BinHashes::none();
         assert!(hashes.is_empty());
         assert_eq!(hashes.lookup_field(BinHash(0x1234)), None);

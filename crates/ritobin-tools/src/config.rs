@@ -1,4 +1,4 @@
-//! The configuration file.
+//! Loads and saves the configuration file.
 
 use std::{env, fs};
 
@@ -8,34 +8,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::TextLayout;
 
-/// The name of the configuration file, which lives next to the executable.
+/// The name of the configuration file. The file is located in the directory of the executable.
 pub const CONFIG_FILE_NAME: &str = "ritobin-tools.toml";
 
-/// The name the configuration file had before it was named after the tool.
+/// The previous name of the configuration file. A file with this name is still read.
 const LEGACY_CONFIG_FILE_NAME: &str = "config.toml";
 
-/// The settings stored in the configuration file. Every one has a flag that overrides it.
+/// The settings stored in the configuration file. A command line flag overrides each setting.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
-    /// The hashtable cache directory. Unset means the cache every LeagueToolkit tool shares.
+    /// The hashtable cache directory. If unset, the shared LeagueToolkit cache directory is
+    /// used.
     pub hashtable_dir: Option<Utf8PathBuf>,
     /// The game directory used by the `gamedata` commands: the `Game` directory of an
     /// installation, or its parent directory.
     pub game_dir: Option<Utf8PathBuf>,
-    /// How ritobin text is laid out.
+    /// The layout options for printing ritobin text.
     pub print_config: TextLayout,
 }
 
-/// The directory the executable is in.
+/// Returns the directory that contains the executable.
 fn install_dir() -> Option<Utf8PathBuf> {
     let exe = env::current_exe().ok()?;
     Utf8PathBuf::from_path_buf(exe.parent()?.to_path_buf()).ok()
 }
 
-/// The configuration file to use: `explicit` when given, else the one next to the executable.
+/// Returns the path of the configuration file: `explicit` if it is set, otherwise
+/// [`CONFIG_FILE_NAME`] in the directory of the executable.
 ///
-/// A file under the old name is still used while none under the new name exists.
+/// Returns the path of the legacy file name if a file with that name exists and no file with the
+/// current name exists. Returns `None` if the directory of the executable is unknown.
 pub fn config_path(explicit: Option<&Utf8Path>) -> Option<Utf8PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_owned());
@@ -49,7 +52,8 @@ pub fn config_path(explicit: Option<&Utf8Path>) -> Option<Utf8PathBuf> {
     Some(path)
 }
 
-/// Loads the configuration at `path`. A file that does not exist is the defaults.
+/// Loads the configuration at `path`. Returns the default configuration if the file does not
+/// exist.
 pub fn load(path: &Utf8Path) -> Result<AppConfig> {
     load_table(path)?
         .try_into()
@@ -57,7 +61,8 @@ pub fn load(path: &Utf8Path) -> Result<AppConfig> {
         .wrap_err_with(|| format!("Invalid config file {path}"))
 }
 
-/// Loads the configuration at `path` as a raw table. A file that does not exist is empty.
+/// Loads the configuration at `path` as a TOML table. Returns an empty table if the file does
+/// not exist.
 pub fn load_table(path: &Utf8Path) -> Result<toml::Table> {
     if !path.exists() {
         return Ok(toml::Table::new());
@@ -85,14 +90,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_file_is_the_defaults() {
+    fn load_returns_defaults_for_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join(CONFIG_FILE_NAME)).unwrap();
         assert_eq!(load(&path).unwrap(), AppConfig::default());
     }
 
     #[test]
-    fn a_saved_config_loads_back() {
+    fn saved_config_loads_back_equal() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join(CONFIG_FILE_NAME)).unwrap();
         let config = AppConfig {
@@ -109,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_layout_keeps_the_other_defaults() {
+    fn partial_layout_uses_defaults_for_missing_keys() {
         let config: AppConfig = toml::from_str(
             "[print_config]\nindent_size = 2\n[print_config.wrap]\nline_width = 80\n",
         )

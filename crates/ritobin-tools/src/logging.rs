@@ -1,5 +1,5 @@
-//! Log output. Everything goes to standard error, so standard output carries only what a command
-//! was asked to print.
+//! Configures log output. All log messages are written to standard error. Standard output
+//! contains only the output a command was asked to print.
 
 use std::io::IsTerminal as _;
 
@@ -20,6 +20,8 @@ impl From<VerbosityLevel> for Level {
     }
 }
 
+/// Installs the global log subscriber. Messages below `verbosity` are discarded. Colors are
+/// used only if standard error is a terminal.
 pub fn init(verbosity: VerbosityLevel) {
     let format = fmt::format()
         .with_level(true)

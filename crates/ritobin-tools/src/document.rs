@@ -1,4 +1,4 @@
-//! Reading and writing bin documents in either format: binary `.bin` and ritobin text.
+//! Reads and writes bin documents in both formats: binary `.bin` and ritobin text.
 
 use std::{
     fmt,
@@ -20,26 +20,27 @@ use thiserror::Error;
 
 use crate::hashes::BinHashes;
 
-/// The path that stands for standard input or standard output.
+/// The path argument that selects standard input or standard output.
 pub const STDIO: &str = "-";
 
-/// The extension written for ritobin text unless another is asked for.
+/// The default file extension of ritobin text output.
 pub const DEFAULT_TEXT_EXTENSION: &str = "rito";
 
-/// The extensions a directory scan reads as ritobin text.
+/// The file extensions that a directory scan treats as ritobin text.
 pub const TEXT_EXTENSIONS: &[&str] = &["rito", "ritobin", "py"];
 
-/// The extension of a binary bin file.
+/// The file extension of a binary bin file.
 pub const BIN_EXTENSION: &str = "bin";
 
-/// How many problems of one text file are shown before the rest are counted.
+/// The maximum number of problems shown for one text file. The remaining problems are only
+/// counted.
 const MAX_SHOWN_PROBLEMS: usize = 20;
 
-/// The two formats a bin document is stored in.
+/// The storage format of a bin document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
-    /// Binary, as the game reads it.
+    /// The binary format used by the game.
     Bin,
     /// Ritobin text.
     #[value(alias = "text", alias = "ritobin")]
@@ -47,7 +48,8 @@ pub enum Format {
 }
 
 impl Format {
-    /// The format of `data`, told by its content. Anything without a bin magic is text.
+    /// Returns the format of `data`, detected from its magic bytes. Returns `Rito` if `data`
+    /// does not start with a bin magic.
     pub fn detect(data: &[u8]) -> Self {
         match BinKind::identify_from_bytes(data) {
             Some(_) => Self::Bin,
@@ -55,7 +57,7 @@ impl Format {
         }
     }
 
-    /// The format a file with this extension holds, if the extension is a known one.
+    /// Returns the format for a file extension. Returns `None` for an unknown extension.
     pub fn from_extension(extension: &str) -> Option<Self> {
         let extension = extension.to_ascii_lowercase();
         if extension == BIN_EXTENSION {
@@ -67,7 +69,7 @@ impl Format {
         }
     }
 
-    /// The format a conversion produces when none is asked for.
+    /// Returns the other format. A conversion uses it as the default output format.
     pub fn opposite(self) -> Self {
         match self {
             Self::Bin => Self::Rito,
@@ -85,21 +87,21 @@ impl fmt::Display for Format {
     }
 }
 
-/// How ritobin text is laid out.
+/// Layout options for printing ritobin text.
 ///
-/// This is the `[print_config]` table of the config file, in the shape `ltk_ritobin` serializes
-/// its own print config. Every field has a command line flag that overrides it for one run.
+/// The config file stores them in the `[print_config]` table, in the same structure as the
+/// serialized `ltk_ritobin` print config. A command line flag overrides each field for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "LayoutTable", into = "LayoutTable")]
 pub struct TextLayout {
     /// Spaces per indent level.
     pub indent_size: usize,
-    /// The line width past which a block is broken over several lines. It is kept between
-    /// [`MIN_LINE_WIDTH`] and [`MAX_LINE_WIDTH`].
+    /// The maximum line width. A block that exceeds it is printed on several lines. The value
+    /// is clamped to the range from [`MIN_LINE_WIDTH`] to [`MAX_LINE_WIDTH`].
     pub line_width: usize,
-    /// Whether a struct that fits on one line is printed on one line.
+    /// If `true`, a struct that fits within the line width is printed on one line.
     pub inline_structs: bool,
-    /// Whether a list that fits on one line is printed on one line.
+    /// If `true`, a list that fits within the line width is printed on one line.
     pub inline_lists: bool,
 }
 
@@ -115,7 +117,8 @@ impl Default for TextLayout {
     }
 }
 
-/// [`TextLayout`] as the config file holds it. A key that is left out keeps its default.
+/// The serialized form of [`TextLayout`] in the config file. A missing key uses its default
+/// value.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct LayoutTable {
@@ -178,12 +181,12 @@ impl From<TextLayout> for PrintConfig<()> {
     }
 }
 
-/// How ritobin text is read.
+/// Options for reading ritobin text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReadOptions {
-    /// Build a best-effort document from text that has problems, reporting them as warnings.
-    ///
-    /// The parts of the text a problem names may be missing from the result.
+    /// If `true`, text with problems is still converted. The problems are reported as
+    /// warnings. The parts of the text that a problem refers to may be missing from the
+    /// document.
     pub lenient: bool,
 }
 
@@ -195,14 +198,14 @@ pub struct Document {
 }
 
 impl Document {
-    /// Reads the document at `path`, or standard input for [`STDIO`]. The format is told by the
-    /// content, not the extension.
+    /// Reads the document at `path`, or from standard input if `path` is [`STDIO`]. The format
+    /// is detected from the content. The file extension is not used.
     pub fn read(path: &Utf8Path, options: ReadOptions) -> Result<Self> {
         let data = read_bytes(path)?;
         Self::parse(path.as_str(), data, options)
     }
 
-    /// Parses a document from memory. `name` is what diagnostics call it.
+    /// Parses a document from `data`. `name` is the file name shown in diagnostics.
     pub fn parse(name: &str, data: Vec<u8>, options: ReadOptions) -> Result<Self> {
         match Format::detect(&data) {
             Format::Bin => {
@@ -231,7 +234,7 @@ impl Document {
     }
 }
 
-/// The format of the file at `path`, told by its first bytes.
+/// Returns the format of the file at `path`, detected from its first 4 bytes.
 pub fn detect_file(path: &Utf8Path) -> Result<Format> {
     let mut magic = Vec::with_capacity(4);
     std::fs::File::open(path)
@@ -241,8 +244,8 @@ pub fn detect_file(path: &Utf8Path) -> Result<Format> {
     Ok(Format::detect(&magic))
 }
 
-/// Whether the file at `path` starts with the line ritobin text is written with: `#PROP_text`, or
-/// `#PTCH_text` for a patch.
+/// Returns `true` if the file at `path` starts with a ritobin text header: `#PROP_text`, or
+/// `#PTCH_text` for a patch. A leading UTF-8 byte order mark is skipped.
 pub fn has_text_header(path: &Utf8Path) -> io::Result<bool> {
     const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
     const HEADERS: [&[u8]; 2] = [b"#PROP_text", b"#PTCH_text"];
@@ -255,7 +258,7 @@ pub fn has_text_header(path: &Utf8Path) -> io::Result<bool> {
     Ok(HEADERS.iter().any(|header| start.starts_with(header)))
 }
 
-/// Reads the whole of `path`, or of standard input for [`STDIO`].
+/// Reads all bytes of the file at `path`, or of standard input if `path` is [`STDIO`].
 pub fn read_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
     if path == STDIO {
         let mut data = Vec::new();
@@ -271,7 +274,8 @@ pub fn read_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
         .map_err(|error| error.wrap_err(format!("Failed to read {path}")))
 }
 
-/// Writes `data` to `path`, or to standard output for [`STDIO`], creating the parent directories.
+/// Writes `data` to the file at `path`, or to standard output if `path` is [`STDIO`]. Creates
+/// missing parent directories.
 pub fn write_bytes(path: &Utf8Path, data: &[u8]) -> Result<()> {
     if path == STDIO {
         let mut stdout = io::stdout().lock();
@@ -306,7 +310,7 @@ pub fn encode(
     }
 }
 
-/// Encodes `file` as a binary bin of its own kind.
+/// Encodes `file` in the binary format: `PROP` for a bin, `PTCH` for a patch.
 pub fn to_bin(file: &BinFile) -> Result<Vec<u8>> {
     let mut out = Cursor::new(Vec::new());
     file.to_writer(&mut out)
@@ -315,20 +319,21 @@ pub fn to_bin(file: &BinFile) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
-/// Prints `file` as ritobin text, naming every hash `hashes` knows.
+/// Prints `file` as ritobin text. A hash that `hashes` resolves is printed as its name.
 pub fn to_text(
     file: &BinFile,
     layout: TextLayout,
     hashes: &BinHashes,
 ) -> Result<String, PrintError> {
-    // `Print::print_with_config` drops the layout of its config, so the tree is built and printed
-    // here.
+    // `Print::print_with_config` ignores the wrap settings of its config. The CST is built and
+    // printed directly so that the settings are applied.
     let builder = CstBuilder::new().with_hashes(hashes.clone());
     let (cst, source) = match file {
         BinFile::Prop(bin) => builder.build(bin),
         BinFile::Override(patch) => builder.build_override(patch),
     };
-    // The printer is always asked for its own indent, and the text is indented again after it.
+    // The printer ignores `indent_size` and always indents by `PRINTER_INDENT`. `reindent`
+    // converts the output to the requested indent size.
     let config = PrintConfig::from(TextLayout {
         indent_size: PRINTER_INDENT,
         line_width: layout.line_width.clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH),
@@ -342,11 +347,12 @@ pub fn to_text(
     Ok(reindent(text, layout.indent_size))
 }
 
-/// Whether `text` reads back as exactly `file`: it parses with no problem, and what it parses to
-/// encodes to the same bytes.
+/// Returns `true` if `text` parses without problems and the parsed document encodes to the same
+/// bytes as `file`.
 ///
-/// The printer does not write every value in a form the parser reads back, so text printed from a
-/// bin is checked with this before it is trusted.
+/// The printer writes some values in a form that the parser does not read back identically.
+/// `convert` and `diff` use this function to verify text printed from a bin, and warn on a
+/// mismatch.
 pub fn reads_back(file: &BinFile, text: &str) -> bool {
     let cst = Cst::parse(text);
     if !cst.errors.is_empty() {
@@ -362,21 +368,22 @@ pub fn reads_back(file: &BinFile, text: &str) -> bool {
     }
 }
 
-/// The indent the printer writes, whatever its config asks for.
+/// The indent size the printer always uses. The printer ignores the indent size of its config.
 const PRINTER_INDENT: usize = 4;
 
-/// The narrowest line width the printer is given. Below it the printer breaks inside a type, and
-/// the text no longer parses.
+/// The minimum line width passed to the printer. With a smaller width the printer breaks a line
+/// inside a type, and the output does not parse.
 pub const MIN_LINE_WIDTH: usize = 40;
 
-/// The widest line width the printer is given. Far above it the printer runs out of the room it
-/// keeps for one line.
+/// The maximum line width passed to the printer. With a much larger width the printer can
+/// panic.
 pub const MAX_LINE_WIDTH: usize = 200;
 
-/// Rewrites the leading [`PRINTER_INDENT`] steps of every line as steps of `indent_size`.
+/// Converts the indentation of every line from [`PRINTER_INDENT`] spaces per level to
+/// `indent_size` spaces per level.
 ///
-/// A line break inside a string is written as an escape, so the spaces a line starts with are
-/// always indentation.
+/// The printer escapes line breaks inside strings, so the leading spaces of a line are always
+/// indentation.
 fn reindent(text: String, indent_size: usize) -> String {
     if indent_size == PRINTER_INDENT {
         return text;
@@ -392,8 +399,8 @@ fn reindent(text: String, indent_size: usize) -> String {
     out
 }
 
-/// The output path of a conversion that names none: `input` with the extension of the target
-/// format.
+/// Returns the default output path of a conversion: `input` with the file extension of the
+/// target format.
 pub fn converted_path(input: &Utf8Path, to: Format, text_extension: &str) -> Utf8PathBuf {
     input.with_extension(match to {
         Format::Bin => BIN_EXTENSION,
@@ -401,7 +408,7 @@ pub fn converted_path(input: &Utf8Path, to: Format, text_extension: &str) -> Utf
     })
 }
 
-/// One problem in a ritobin text file, pointing at the text it is about.
+/// One problem in a ritobin text file, with the span of the text it refers to.
 #[derive(Debug, Error, MietteDiagnostic)]
 #[error("{message}")]
 struct TextProblem {
@@ -421,7 +428,7 @@ impl TextProblem {
     }
 }
 
-/// The problems that stop a ritobin text file from being read.
+/// The problems found in one ritobin text file.
 #[derive(Debug, Error, MietteDiagnostic)]
 #[error("{name} has {count} {}", if *.count == 1 { "problem" } else { "problems" })]
 struct TextProblems {
@@ -435,6 +442,9 @@ struct TextProblems {
     help: Option<String>,
 }
 
+/// Parses ritobin text into a bin document. Fails if the text has a syntax error or a build
+/// diagnostic other than a shadowed entry. If `options.lenient` is set, these problems are
+/// printed as warnings and the parse succeeds.
 fn parse_text(name: &str, text: String, options: ReadOptions) -> Result<BinFile> {
     let cst = Cst::parse(&text);
     let (file, diagnostics) = cst.build(&text);
@@ -447,7 +457,8 @@ fn parse_text(name: &str, text: String, options: ReadOptions) -> Result<BinFile>
     let mut warnings = Vec::new();
     for diagnostic in &diagnostics {
         let problem = TextProblem::new(diagnostic.diagnostic, diagnostic.span);
-        // A later entry replacing an earlier one loses nothing the text asked to keep.
+        // A shadowed entry is a duplicate key. The later entry replaces the earlier one and the
+        // document is complete, so it is a warning.
         match diagnostic.diagnostic {
             Diagnostic::ShadowedEntry { .. } => warnings.push(problem),
             _ => errors.push(problem),
@@ -469,11 +480,13 @@ fn parse_text(name: &str, text: String, options: ReadOptions) -> Result<BinFile>
         name,
         &text,
         errors,
-        Some("pass --lenient to convert what can be read".to_owned()),
+        Some("pass --lenient to skip the invalid parts and convert the rest".to_owned()),
     )
     .into())
 }
 
+/// Builds the diagnostic for the problems `all` of the file `name`. Shows at most
+/// [`MAX_SHOWN_PROBLEMS`] of them.
 fn problems(
     name: &str,
     text: &str,
@@ -483,8 +496,12 @@ fn problems(
     let count = all.len();
     all.truncate(MAX_SHOWN_PROBLEMS);
     let help = match (count > all.len(), help) {
-        (true, Some(help)) => Some(format!("the first {MAX_SHOWN_PROBLEMS} are shown; {help}")),
-        (true, None) => Some(format!("the first {MAX_SHOWN_PROBLEMS} are shown")),
+        (true, Some(help)) => Some(format!(
+            "only the first {MAX_SHOWN_PROBLEMS} problems are shown; {help}"
+        )),
+        (true, None) => Some(format!(
+            "only the first {MAX_SHOWN_PROBLEMS} problems are shown"
+        )),
         (false, help) => help,
     };
     TextProblems {
@@ -496,7 +513,7 @@ fn problems(
     }
 }
 
-/// Marks a report as a warning, so it renders as one.
+/// Sets the severity of a report to warning.
 trait ReportExt {
     fn with_severity_warning(self) -> Self;
 }
@@ -557,14 +574,14 @@ mod tests {
     }
 
     #[test]
-    fn a_prop_bin_survives_both_formats() {
+    fn prop_bin_round_trips_in_both_formats() {
         let file = sample();
         assert_eq!(roundtrip(&file, Format::Bin), file);
         assert_eq!(roundtrip(&file, Format::Rito), file);
     }
 
     #[test]
-    fn a_patch_bin_survives_both_formats() {
+    fn patch_bin_round_trips_in_both_formats() {
         let file: BinFile = BinOverride::builder()
             .delete(0xdead_beefu32)
             .object(BinObject::new(0x1234, 0x5678))
@@ -580,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_reaches_the_printer() {
+    fn to_text_applies_indent_size_and_inline_structs() {
         let narrow = TextLayout {
             indent_size: 2,
             ..TextLayout::default()
@@ -605,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn reindent_rewrites_only_the_leading_spaces() {
+    fn reindent_changes_only_leading_spaces() {
         let text = "a {\n    b: string = \"x    y\"\n        c\n}\n".to_owned();
         assert_eq!(
             reindent(text.clone(), 2),
@@ -617,7 +634,7 @@ mod tests {
     const VALID_TEXT: &str = "#PROP_text\ntype: string = \"PROP\"\nversion: u32 = 3\nlinked: list[string] = { }\nentries: map[hash, embed] = {\n    0x1 = 0x2 {\n        0x10: u32 = 42\n    }\n}\n";
 
     #[test]
-    fn text_with_a_syntax_error_is_rejected() {
+    fn parse_fails_on_syntax_error() {
         Document::parse("valid.rito", VALID_TEXT.into(), ReadOptions::default()).unwrap();
 
         let broken = VALID_TEXT.replace("= 42", "= 4!!2");
@@ -627,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn a_byte_order_mark_before_text_is_ignored() {
+    fn parse_skips_byte_order_mark() {
         let marked = format!("\u{feff}{VALID_TEXT}");
         let document = Document::parse("marked.rito", marked.into(), ReadOptions::default());
         assert_eq!(
@@ -639,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn printed_text_reads_back_as_the_bin_it_was_printed_from() {
+    fn reads_back_accepts_printed_text_and_rejects_changed_text() {
         let file = sample();
         let text = to_text(&file, TextLayout::default(), &BinHashes::none()).unwrap();
         assert!(reads_back(&file, &text));
@@ -648,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn the_line_width_given_to_the_printer_is_bounded() {
+    fn to_text_clamps_line_width() {
         let file = sample();
         for line_width in [0, 1, usize::MAX] {
             let layout = TextLayout {
@@ -661,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn the_format_of_a_file_is_told_by_its_first_bytes() {
+    fn detect_file_uses_magic_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("misnamed.rito")).unwrap();
 
@@ -673,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn lenient_reading_keeps_what_parses() {
+    fn lenient_parse_keeps_valid_properties() {
         let text = "#PROP_text\ntype: string = \"PROP\"\nversion: u32 = 3\nlinked: list[string] = { }\nentries: map[hash, embed] = {\n    0x1 = 0x2 {\n        0x10: u32 = \"oops\"\n        0x11: u32 = 7\n    }\n}\n";
         assert!(Document::parse("a.rito", text.into(), ReadOptions::default()).is_err());
 
@@ -684,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn extensions_map_to_formats() {
+    fn from_extension_maps_known_extensions() {
         assert_eq!(Format::from_extension("bin"), Some(Format::Bin));
         assert_eq!(Format::from_extension("RITO"), Some(Format::Rito));
         assert_eq!(Format::from_extension("py"), Some(Format::Rito));
@@ -692,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn a_converted_path_swaps_the_extension() {
+    fn converted_path_replaces_extension() {
         let input = Utf8Path::new("data/skin0.bin");
         assert_eq!(
             converted_path(input, Format::Rito, "rito"),

@@ -22,46 +22,46 @@ pub struct ConvertArgs {
     #[arg(value_name = "INPUTS")]
     pub inputs: Vec<Utf8PathBuf>,
 
-    /// Files or directories to convert, as a flag
+    /// Files or directories to convert. Same as the positional inputs
     #[arg(short, long = "input", value_name = "PATH", num_args = 1..)]
     pub input: Vec<Utf8PathBuf>,
 
-    /// Where to write the result: a file for a file input, a directory for a directory input,
-    /// `-` for standard output. Defaults to a file next to each input
+    /// Output path: a file for a file input, a directory for a directory input, or `-` for
+    /// standard output. Defaults to a file next to each input
     #[arg(short, long, value_name = "PATH")]
     pub output: Option<Utf8PathBuf>,
 
-    /// Convert the files in subdirectories of a directory input too
+    /// Include the subdirectories of a directory input
     #[arg(short, long)]
     pub recursive: bool,
 
-    /// The format to convert to. Defaults to the opposite of each input, or to the format the
-    /// output extension names
+    /// Output format. Defaults to the format of the output file extension, or to the other
+    /// format than the input
     #[arg(short, long, value_enum, value_name = "FORMAT")]
     pub to: Option<Format>,
 
-    /// The format of the files a directory input is scanned for. Defaults to the opposite of
+    /// Input format that a directory input is scanned for. Defaults to the other format than
     /// `--to`, or to `bin`
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub from: Option<Format>,
 
-    /// The extension given to text output
+    /// File extension for text output
     #[arg(long = "ext", value_name = "EXT", default_value = DEFAULT_TEXT_EXTENSION)]
     pub text_extension: String,
 
-    /// Leave hashes as hex instead of naming them from the hashtables
+    /// Write hashes as hex. Do not resolve them with the hashtables
     #[arg(short, long)]
     pub keep_hashed: bool,
 
-    /// Convert text that has problems, leaving out what cannot be read
+    /// Convert text that has problems. The invalid parts are skipped
     #[arg(long)]
     pub lenient: bool,
 
-    /// Leave an output file that already exists as it is
+    /// Do not overwrite an existing output file
     #[arg(long)]
     pub skip_existing: bool,
 
-    /// Do not check that text printed from a bin reads back as the same bin
+    /// Skip the check that text printed from a bin parses back to the same bin
     #[arg(long)]
     pub no_verify: bool,
 
@@ -70,12 +70,13 @@ pub struct ConvertArgs {
 }
 
 impl ConvertArgs {
-    /// The extension for text output, without the dot it may have been given with.
+    /// Returns the text output extension without a leading dot.
     fn text_extension(&self) -> &str {
         self.text_extension.trim_start_matches('.')
     }
 
-    /// The format the flags or the extension of `output` ask for, if either does.
+    /// Returns the output format requested by `--to`, or by the file extension of `output`.
+    /// Returns `None` if neither specifies a format.
     fn asked_format(&self, output: Option<&Utf8Path>) -> Option<Format> {
         self.to.or_else(|| {
             output
@@ -85,25 +86,28 @@ impl ConvertArgs {
     }
 }
 
-/// One file to convert, and where it goes.
+/// One conversion: an input file and its output path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
     input: Utf8PathBuf,
     output: Utf8PathBuf,
-    /// The format to write. `None` is the opposite of the input, for standard input, whose format
-    /// is not known until it is read.
+    /// The output format. `None` for standard input without a requested format. The output
+    /// format is then the other format than the input, which is known after the input is read.
     to: Option<Format>,
 }
 
+/// The result of one conversion that did not fail.
 enum Outcome {
     Converted,
     Skipped,
 }
 
+/// Runs the `convert` command. With several inputs, a failed conversion does not stop the run.
+/// The command fails after the last input if any conversion failed.
 pub fn run(ctx: &Context, args: ConvertArgs) -> Result<()> {
     let jobs = plan(&args)?;
     let layout = args.layout.over(ctx.config.print_config);
-    // The tables are opened when the first text output needs them.
+    // The hashtables are loaded on first use. A run that only writes bins does not load them.
     let tables = OnceCell::new();
     let hashes = || {
         tables.get_or_init(|| match args.keep_hashed {
@@ -141,16 +145,16 @@ pub fn run(ctx: &Context, args: ConvertArgs) -> Result<()> {
     Ok(())
 }
 
-/// The files `args` asks for, each with where it goes. Nothing is written when one of them would
-/// be written over an input or over another output.
+/// Builds the list of conversions for `args`. Fails before any file is written if an output path
+/// equals an input path or another output path.
 fn plan(args: &ConvertArgs) -> Result<Vec<Job>> {
     let inputs: Vec<&Utf8PathBuf> = args.inputs.iter().chain(&args.input).collect();
     if inputs.is_empty() {
-        miette::bail!("No input given. Pass files or directories to convert");
+        miette::bail!("No input was given. Pass files or directories to convert");
     }
     if args.output.is_some() && inputs.len() > 1 {
         miette::bail!(
-            "--output needs a single input, and {} were given",
+            "--output requires exactly one input, but {} were given",
             inputs.len()
         );
     }
@@ -187,7 +191,8 @@ fn plan(args: &ConvertArgs) -> Result<Vec<Job>> {
     Ok(jobs)
 }
 
-/// Refuses a run in which a file would be written over an input, or two files over each other.
+/// Fails if the output path of a job equals the input path of any job, or the output path of
+/// another job.
 fn check_overwrites(jobs: &[Job]) -> Result<()> {
     let inputs: HashMap<String, &Utf8Path> = jobs
         .iter()
@@ -203,18 +208,18 @@ fn check_overwrites(jobs: &[Job]) -> Result<()> {
         let key = same_file_key(&job.output);
         match inputs.get(&key) {
             Some(input) if *input == job.input => miette::bail!(
-                "Converting {} would write it over itself. Pass --output to write it somewhere else",
+                "The output path of {} is the input file itself. Pass --output to write to a different path",
                 job.input
             ),
             Some(input) => miette::bail!(
-                "Converting {} would write over {input}, which is also an input. Convert them one at a time",
+                "The output path of {} is {input}, which is also an input. Convert the files separately",
                 job.input
             ),
             None => {}
         }
         if let Some(other) = outputs.insert(key, &job.input) {
             miette::bail!(
-                "{other} and {} would both be written to {}. Convert them one at a time",
+                "{other} and {} have the same output path {}. Convert the files separately",
                 job.input,
                 job.output
             );
@@ -223,8 +228,8 @@ fn check_overwrites(jobs: &[Job]) -> Result<()> {
     Ok(())
 }
 
-/// A text that is equal for two paths to the same file: the absolute path, with one kind of
-/// separator, and in one case where the file system ignores case.
+/// Returns a key that is equal for two paths to the same file: the absolute path with `/`
+/// separators, lowercased on Windows.
 fn same_file_key(path: &Utf8Path) -> String {
     let absolute = std::path::absolute(path)
         .map(|absolute| absolute.to_string_lossy().into_owned())
@@ -236,8 +241,8 @@ fn same_file_key(path: &Utf8Path) -> String {
     }
 }
 
-/// The files of one format under `dir`, sorted, each going next to itself or to the same place
-/// under the output directory.
+/// Builds the conversions for the files of one format in `dir`, sorted by path. The output of a
+/// file is next to the file, or at the same relative path under the output directory.
 fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
     let from = args
         .from
@@ -269,14 +274,14 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
         if path.extension().and_then(Format::from_extension) != Some(from) {
             continue;
         }
-        // `.py` is also the extension of Python source. As in the C++ ritobin, a `.py` file is
-        // ritobin text when it starts with the ritobin header. One that cannot be read is kept,
-        // for the conversion to report.
+        // `.py` is also the extension of Python source files. The C++ ritobin treats a `.py`
+        // file as ritobin text only if it starts with the ritobin header, and this scan does
+        // the same. A file that cannot be read is included, so the conversion reports the error.
         let python = path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
         if python && !has_text_header(path).unwrap_or(true) {
-            tracing::debug!("Skipped {path}: it does not start as ritobin text");
+            tracing::debug!("Skipped {path}: the file does not start with a ritobin text header");
             continue;
         }
         files.push(path.to_owned());
@@ -293,10 +298,10 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
         };
         let recursion = match args.recursive {
             true => "",
-            false => " (pass --recursive to look in subdirectories)",
+            false => " (pass --recursive to include subdirectories)",
         };
         miette::bail!(
-            "No {wanted} files in {dir}{recursion}. Pass --from {} to convert the other way",
+            "No {wanted} files were found in {dir}{recursion}. Pass --from {} to convert in the other direction",
             from.opposite()
         );
     }
@@ -317,6 +322,7 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
         .collect())
 }
 
+/// Converts one file. Returns `Skipped` if `--skip-existing` is set and the output file exists.
 fn convert<'h>(
     job: &Job,
     args: &ConvertArgs,
@@ -326,7 +332,7 @@ fn convert<'h>(
     let to_stdout = job.output.as_str() == STDIO;
     if args.skip_existing && !to_stdout && job.output.exists() {
         tracing::info!(
-            "Skipped {}: {} exists",
+            "Skipped {}: {} already exists",
             job.input,
             hyperlink_path(&job.output)
         );
@@ -354,7 +360,7 @@ fn convert<'h>(
         && !std::str::from_utf8(&data).is_ok_and(|text| reads_back(&document.file, text))
     {
         tracing::warn!(
-            "The text of {} does not read back as the same bin. The printer does not keep every value as it is: a string that starts or ends with a space and a NaN or infinite number are known cases. `ritobin-tools diff -f summary` on the bin and the text shows where.",
+            "The text printed for {} does not parse back to the same bin. The printer does not print every value exactly. Known cases are a string with a leading or trailing space, and a NaN or infinite number. Run `ritobin-tools diff -f summary` on the bin and the text to list the differences.",
             job.input
         );
     }
@@ -431,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bin_converts_to_text_next_to_it_and_back() {
+    fn bin_converts_to_text_and_back() {
         let (_guard, dir) = temp_dir();
         let bin = dir.join("skin0.bin");
         write_sample(&bin);
@@ -450,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn the_format_is_told_by_content_and_not_by_extension() {
+    fn input_format_is_detected_from_content() {
         let (_guard, dir) = temp_dir();
         let misnamed = dir.join("skin0.dat");
         write_sample(&misnamed);
@@ -460,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn the_output_extension_names_the_format() {
+    fn output_extension_selects_format() {
         let (_guard, dir) = temp_dir();
         let bin = dir.join("skin0.bin");
         write_sample(&bin);
@@ -475,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_never_written_over_itself() {
+    fn plan_fails_when_output_is_the_input() {
         let (_guard, dir) = temp_dir();
         let bin = dir.join("skin0.bin");
         write_sample(&bin);
@@ -485,9 +491,15 @@ mod tests {
             to: Some(Format::Bin),
             ..args(&[&bin])
         });
-        assert!(same_format.unwrap_err().to_string().contains("over itself"));
+        assert!(
+            same_format
+                .unwrap_err()
+                .to_string()
+                .contains("is the input file itself")
+        );
 
-        // Text under a `.bin` name converts to a bin, which would have the same name.
+        // A text file with a `.bin` extension converts to a bin, and the default output path of
+        // that conversion is the input path.
         let misnamed = dir.join("text.bin");
         run_with(ConvertArgs {
             output: Some(misnamed.clone()),
@@ -503,12 +515,17 @@ mod tests {
             text_extension: "bin".to_owned(),
             ..args(&[&bin])
         });
-        assert!(extension.unwrap_err().to_string().contains("over itself"));
+        assert!(
+            extension
+                .unwrap_err()
+                .to_string()
+                .contains("is the input file itself")
+        );
         assert_eq!(std::fs::read(&bin).unwrap(), before);
     }
 
     #[test]
-    fn a_bin_and_its_text_are_not_converted_over_each_other() {
+    fn plan_fails_when_output_is_another_input() {
         let (_guard, dir) = temp_dir();
         let bin = dir.join("skin0.bin");
         write_sample(&bin);
@@ -526,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn two_inputs_are_not_written_to_one_output() {
+    fn plan_fails_when_two_inputs_share_an_output() {
         let (_guard, dir) = temp_dir();
         std::fs::write(dir.join("skin0.rito"), "").unwrap();
         std::fs::write(dir.join("skin0.py"), "#PROP_text\n").unwrap();
@@ -536,11 +553,11 @@ mod tests {
             ..args(&[&dir])
         })
         .unwrap_err();
-        assert!(error.to_string().contains("would both be written to"));
+        assert!(error.to_string().contains("have the same output path"));
     }
 
     #[test]
-    fn a_directory_scan_takes_a_py_file_only_when_it_starts_as_ritobin_text() {
+    fn scan_includes_py_file_only_with_text_header() {
         let (_guard, dir) = temp_dir();
         std::fs::write(dir.join("legacy.py"), "\u{feff}#PROP_text\n").unwrap();
         std::fs::write(dir.join("patch.PY"), "#PTCH_text\n").unwrap();
@@ -560,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_scan_takes_one_format_and_honors_recursive() {
+    fn scan_selects_one_format_and_honors_recursive() {
         let (_guard, dir) = temp_dir();
         write_sample(&dir.join("a.bin"));
         write_sample(&dir.join("nested/b.bin"));
@@ -581,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_output_mirrors_the_input_tree() {
+    fn directory_output_keeps_relative_paths() {
         let (_guard, dir) = temp_dir();
         let source = dir.join("src");
         write_sample(&source.join("nested/b.bin"));
@@ -597,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_without_matching_files_is_an_error() {
+    fn scan_fails_without_matching_files() {
         let (_guard, dir) = temp_dir();
         std::fs::write(dir.join("notes.rito"), "").unwrap();
 
@@ -606,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn the_text_extension_is_used_with_or_without_its_dot() {
+    fn text_extension_accepts_leading_dot() {
         let (_guard, dir) = temp_dir();
         let bin = dir.join("skin0.bin");
         write_sample(&bin);
@@ -620,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_existing_leaves_the_output_alone() {
+    fn skip_existing_does_not_overwrite_output() {
         let (_guard, dir) = temp_dir();
         let bin = dir.join("skin0.bin");
         write_sample(&bin);
@@ -636,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn output_with_several_inputs_is_rejected() {
+    fn output_with_several_inputs_fails() {
         let (_guard, dir) = temp_dir();
         let (a, b) = (dir.join("a.bin"), dir.join("b.bin"));
         write_sample(&a);
@@ -647,11 +664,15 @@ mod tests {
             ..args(&[&a, &b])
         })
         .unwrap_err();
-        assert!(error.to_string().contains("--output needs a single input"));
+        assert!(
+            error
+                .to_string()
+                .contains("--output requires exactly one input")
+        );
     }
 
     #[test]
-    fn two_spellings_of_one_path_are_the_same_file() {
+    fn same_file_key_is_equal_for_equivalent_paths() {
         let (_guard, dir) = temp_dir();
         let plain = dir.join("skin0.bin");
         let dotted = dir.join(".").join("skin0.bin");
