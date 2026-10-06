@@ -4,10 +4,27 @@ param(
     [string]$Owner = "LeagueToolkit",
     [string]$Repo  = "ritobin-tools",
     [string]$Channel = "windows-x64",
-    [string]$InstallDir = "$env:LOCALAPPDATA\LeagueToolkit\ritobin-tools"
+    [string]$InstallDir = "$env:LOCALAPPDATA\LeagueToolkit\ritobin-tools",
+    # Add the Explorer right-click menu without asking.
+    [switch]$ShellIntegration,
+    # Do not add the Explorer right-click menu, and do not ask.
+    [switch]$NoShellIntegration
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Whether to add the Explorer right-click menu. The switches decide when one is given. Otherwise
+# the user is asked, and an install nobody can answer adds it.
+function Confirm-ShellIntegration {
+    if ($NoShellIntegration) { return $false }
+    if ($ShellIntegration) { return $true }
+
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        $answer = Read-Host 'Add ritobin-tools to the Windows Explorer right-click menu? [Y/n]'
+        return ($answer -notmatch '^\s*(n|no)\s*$')
+    }
+    return $true
+}
 
 Write-Host "Installing ritobin-tools..." -ForegroundColor Cyan
 
@@ -72,6 +89,21 @@ if (-not ($currentPath -split ';' | Where-Object { $_ -eq $binDir })) {
     Write-Host "Added to PATH (User): $binDir" -ForegroundColor Green
 } else {
     Write-Host "PATH already contains: $binDir" -ForegroundColor Green
+}
+
+# The menu is for the current user and needs no administrator rights. Failing to add it does not
+# fail the install.
+if (Confirm-ShellIntegration) {
+    # The tool says what it added. Its output is not redirected: Windows PowerShell turns the
+    # redirected error stream of a program into errors, which would stop this script.
+    & $exePath shell install
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Remove the right-click menu with: ritobin-tools shell uninstall" -ForegroundColor Green
+    } else {
+        Write-Host "Could not add the Explorer right-click menu. Try: ritobin-tools shell install" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Skipped the Explorer right-click menu (add it later with: ritobin-tools shell install)" -ForegroundColor Yellow
 }
 
 Write-Host "Installed ritobin-tools $version to $InstallDir" -ForegroundColor Green

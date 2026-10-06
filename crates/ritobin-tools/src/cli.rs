@@ -8,6 +8,8 @@ use clap::{
     builder::{Styles, styling::AnsiColor},
 };
 
+#[cfg(windows)]
+use crate::commands::shell::ShellCommand;
 use crate::{
     commands::{
         config::ConfigCommand,
@@ -54,6 +56,18 @@ pub struct Cli {
     )]
     pub hashtable: Option<Utf8PathBuf>,
 
+    /// Wait for Enter before exiting. The Explorer menu and files dropped on the executable set
+    /// it, because the console window they open closes when the run ends
+    #[arg(
+        long,
+        value_enum,
+        value_name = "WHEN",
+        default_value_t = PauseMode::Never,
+        global = true,
+        hide = true
+    )]
+    pub pause: PauseMode,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -85,6 +99,34 @@ pub enum Commands {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+
+    /// Manage the Windows Explorer right-click menu
+    #[cfg(windows)]
+    Shell {
+        #[command(subcommand)]
+        command: ShellCommand,
+    },
+}
+
+/// When a run waits for Enter before it exits.
+#[derive(Default, Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum PauseMode {
+    #[default]
+    Never,
+    /// Only after a run that failed
+    OnError,
+    Always,
+}
+
+impl PauseMode {
+    /// Whether a run that `failed` or did not waits.
+    pub fn applies(self, failed: bool) -> bool {
+        match self {
+            PauseMode::Never => false,
+            PauseMode::OnError => failed,
+            PauseMode::Always => true,
+        }
+    }
 }
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -154,7 +196,7 @@ fn styles() -> Styles {
         .placeholder(AnsiColor::Blue.on_default())
 }
 
-fn try_parse(args: impl IntoIterator<Item = OsString>) -> Result<Cli, clap::Error> {
+pub fn try_parse(args: impl IntoIterator<Item = OsString>) -> Result<Cli, clap::Error> {
     let matches = Cli::command()
         .styles(styles())
         .color(ColorChoice::Auto)
@@ -177,7 +219,9 @@ pub fn parse() -> Cli {
     }
 }
 
-/// `args` with `convert` put before them, if every argument is an existing path.
+/// `args` as a `convert` run of them, if every argument is an existing path.
+///
+/// The run waits for Enter when it fails: a drop opens a console window that closes with the run.
 ///
 /// A first argument that is the name of a subcommand is never a dropped file, even when a file or
 /// directory of that name exists.
@@ -186,8 +230,9 @@ fn dropped_files(args: &[OsString]) -> Option<Vec<OsString>> {
     let all_paths = !is_subcommand(paths.first()?)
         && paths.iter().all(|path| std::path::Path::new(path).exists());
     all_paths.then(|| {
-        [program.clone(), "convert".into()]
+        [program.clone()]
             .into_iter()
+            .chain(["--pause", "on-error", "convert"].map(OsString::from))
             .chain(paths.iter().cloned())
             .collect()
     })
@@ -233,14 +278,32 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
 
         let args = vec![OsString::from("ritobin-tools"), file.clone().into()];
+        let dropped = dropped_files(&args).unwrap();
         assert_eq!(
-            dropped_files(&args),
-            Some(vec![
+            dropped,
+            [
                 OsString::from("ritobin-tools"),
+                OsString::from("--pause"),
+                OsString::from("on-error"),
                 OsString::from("convert"),
-                file.into(),
-            ])
+                file.clone().into(),
+            ]
         );
+
+        let cli = try_parse(dropped).unwrap();
+        assert_eq!(cli.pause, PauseMode::OnError);
+        let Commands::Convert(args) = cli.command else {
+            panic!("not the convert command");
+        };
+        assert_eq!(args.inputs, [file]);
+    }
+
+    #[test]
+    fn a_run_waits_only_when_its_pause_mode_says_so() {
+        assert!(!PauseMode::Never.applies(true));
+        assert!(!PauseMode::OnError.applies(false));
+        assert!(PauseMode::OnError.applies(true));
+        assert!(PauseMode::Always.applies(false));
     }
 
     #[test]
