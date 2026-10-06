@@ -10,7 +10,7 @@ use crate::{
     context::Context,
     document::{
         DEFAULT_TEXT_EXTENSION, Document, Format, ReadOptions, STDIO, TEXT_EXTENSIONS, TextLayout,
-        converted_path, detect_file, encode, reads_back, write_bytes,
+        converted_path, detect_file, encode, has_text_header, reads_back, write_bytes,
     },
     hashes::BinHashes,
     utils::{hyperlink_path, plural},
@@ -266,9 +266,20 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
             tracing::warn!("Skipping non-UTF-8 path: {}", entry.path().display());
             continue;
         };
-        if path.extension().and_then(Format::from_extension) == Some(from) {
-            files.push(path.to_owned());
+        if path.extension().and_then(Format::from_extension) != Some(from) {
+            continue;
         }
+        // `.py` is also the extension of Python source. As in the C++ ritobin, a `.py` file is
+        // ritobin text when it starts with the ritobin header. One that cannot be read is kept,
+        // for the conversion to report.
+        let python = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
+        if python && !has_text_header(path).unwrap_or(true) {
+            tracing::debug!("Skipped {path}: it does not start as ritobin text");
+            continue;
+        }
+        files.push(path.to_owned());
     }
 
     if files.is_empty() {
@@ -518,7 +529,7 @@ mod tests {
     fn two_inputs_are_not_written_to_one_output() {
         let (_guard, dir) = temp_dir();
         std::fs::write(dir.join("skin0.rito"), "").unwrap();
-        std::fs::write(dir.join("skin0.py"), "").unwrap();
+        std::fs::write(dir.join("skin0.py"), "#PROP_text\n").unwrap();
 
         let error = plan(&ConvertArgs {
             to: Some(Format::Bin),
@@ -526,6 +537,26 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("would both be written to"));
+    }
+
+    #[test]
+    fn a_directory_scan_takes_a_py_file_only_when_it_starts_as_ritobin_text() {
+        let (_guard, dir) = temp_dir();
+        std::fs::write(dir.join("legacy.py"), "\u{feff}#PROP_text\n").unwrap();
+        std::fs::write(dir.join("patch.PY"), "#PTCH_text\n").unwrap();
+        std::fs::write(dir.join("script.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.join("__init__.py"), "").unwrap();
+
+        let jobs = plan(&ConvertArgs {
+            to: Some(Format::Bin),
+            ..args(&[&dir])
+        })
+        .unwrap();
+        let inputs: Vec<&str> = jobs
+            .iter()
+            .filter_map(|job| job.input.file_name())
+            .collect();
+        assert_eq!(inputs, ["legacy.py", "patch.PY"]);
     }
 
     #[test]

@@ -241,6 +241,20 @@ pub fn detect_file(path: &Utf8Path) -> Result<Format> {
     Ok(Format::detect(&magic))
 }
 
+/// Whether the file at `path` starts with the line ritobin text is written with: `#PROP_text`, or
+/// `#PTCH_text` for a patch.
+pub fn has_text_header(path: &Utf8Path) -> io::Result<bool> {
+    const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
+    const HEADERS: [&[u8]; 2] = [b"#PROP_text", b"#PTCH_text"];
+
+    let mut start = Vec::with_capacity(16);
+    std::fs::File::open(path)?
+        .take((BYTE_ORDER_MARK.len() + HEADERS[0].len()) as u64)
+        .read_to_end(&mut start)?;
+    let start = start.strip_prefix(BYTE_ORDER_MARK).unwrap_or(&start);
+    Ok(HEADERS.iter().any(|header| start.starts_with(header)))
+}
+
 /// Reads the whole of `path`, or of standard input for [`STDIO`].
 pub fn read_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
     if path == STDIO {
