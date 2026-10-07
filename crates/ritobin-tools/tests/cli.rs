@@ -651,6 +651,109 @@ fn gamedata_check_exits_1_when_a_problem_is_reported() {
 }
 
 #[test]
+fn gamedata_extract_writes_game_bins_and_diff_and_patch_read_game_inputs() {
+    let ws = Workspace::new();
+    let tables = ws.field_table();
+    let base = ws.write("base.rito", BASE);
+    ws.tool().arg("convert").arg(&base).assert().success();
+    let bytes = fs::read(ws.path("base.bin")).unwrap();
+    let game = write_game(&ws, &[("data/skin0.bin", &bytes)]);
+    let game_args = |command: &mut Command| {
+        command
+            .arg("--game-dir")
+            .arg(&game)
+            .arg("--index-dir")
+            .arg(ws.path("index"));
+    };
+
+    // A bin path selects one bin. The binary output has the bytes of the chunk.
+    let copy = ws.path("copy.bin");
+    let mut extract = ws.tool();
+    extract
+        .args(["gamedata", "extract", "data/skin0.bin", "--output"])
+        .arg(&copy);
+    game_args(&mut extract);
+    let output = extract.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read(&copy).unwrap(), bytes);
+
+    // An entry selects the bin that declares it. No `game` hashtable is installed, so the bin
+    // has no known path and is named by its chunk hash.
+    let mut extract = ws.tool();
+    extract
+        .args(["gamedata", "extract", "Characters/Test/Skins/Skin0"])
+        .arg("--output-dir")
+        .arg(ws.path("out"))
+        .args(["--to", "rito", "--hashtable"])
+        .arg(&tables);
+    game_args(&mut extract);
+    let output = extract.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let hash = ltk_game_index::chunk_hash("data/skin0.bin").0;
+    let printed = read(&ws.path("out").join(format!("{hash:016x}.rito")));
+    assert!(printed.contains("Size: f32 = 1"), "{printed}");
+
+    let mut missing = ws.tool();
+    missing
+        .args(["gamedata", "extract", "data/missing.bin", "--output"])
+        .arg(ws.path("missing.bin"));
+    game_args(&mut missing);
+    let output = missing.output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("No game archive contains the bin data/missing.bin"));
+    assert!(!ws.path("missing.bin").exists());
+
+    // `diff` reads its base from the game.
+    let edited = ws.write(
+        "edited.rito",
+        &BASE.replace("Size: f32 = 1", "Size: f32 = 2"),
+    );
+    let patch = ws.path("size.ptch");
+    let mut diff = ws.tool();
+    diff.arg("diff")
+        .arg("game:data/skin0.bin")
+        .arg(&edited)
+        .args(["--format", "jsonl", "--exit-code", "--patch"])
+        .arg(&patch)
+        .arg("--hashtable")
+        .arg(&tables);
+    game_args(&mut diff);
+    let output = diff.output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let change: serde_json::Value = serde_json::from_str(stdout(&output).trim()).unwrap();
+    assert_eq!(change["path"], "Size");
+    assert_eq!(change["new"], "2");
+
+    // `patch` reads its base from the game. The base is selected by its entry.
+    let patched = ws.path("patched.bin");
+    let mut apply = ws.tool();
+    apply
+        .arg("patch")
+        .arg("game:Characters/Test/Skins/Skin0")
+        .arg(&patch)
+        .arg("--output")
+        .arg(&patched);
+    game_args(&mut apply);
+    let output = apply.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    ws.tool().arg("convert").arg(&edited).assert().success();
+    assert_eq!(
+        fs::read(&patched).unwrap(),
+        fs::read(ws.path("edited.bin")).unwrap()
+    );
+
+    let no_game = ws
+        .tool()
+        .arg("diff")
+        .arg("game:data/skin0.bin")
+        .arg(&edited)
+        .output()
+        .unwrap();
+    assert_eq!(no_game.status.code(), Some(1));
+    assert!(stderr_line(&no_game).contains("No game directory is set"));
+}
+
+#[test]
 fn search_exit_code_is_0_on_match_1_on_no_match_and_2_on_failure() {
     let ws = Workspace::new();
     let text = ws.write("skin0.rito", BASE);

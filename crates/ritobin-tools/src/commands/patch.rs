@@ -13,16 +13,22 @@ use serde::Serialize;
 
 use crate::{
     cli::LayoutArgs,
-    commands::output::{OutputFormat, columns},
+    commands::{
+        gamedata::GameArgs,
+        input::{Inputs, game_bin},
+        output::{OutputFormat, columns},
+    },
     context::Context,
-    document::{Document, Format, ReadOptions, STDIO, encode, reads_back, write_bytes},
+    document::{Format, ReadOptions, STDIO, encode, reads_back, write_bytes},
     hashes::{BinHashes, format_hash},
     utils::{hyperlink_path, plural, same_file_key},
 };
 
 #[derive(Args, Debug)]
 pub struct PatchArgs {
-    /// The bin to patch (.bin or ritobin text). `-` reads standard input
+    /// The bin to patch: a .bin file, a ritobin text file, `-` for standard input, or
+    /// `game:<BIN>` for a bin of the game. `<BIN>` is a bin path, a chunk hash or an entry, as
+    /// for `gamedata extract`
     pub base: Utf8PathBuf,
 
     /// The PTCH files to apply to BASE, in this order (.bin or ritobin text)
@@ -64,6 +70,9 @@ pub struct PatchArgs {
     pub lenient: bool,
 
     #[command(flatten)]
+    pub game: GameArgs,
+
+    #[command(flatten)]
     pub layout: LayoutArgs,
 }
 
@@ -92,7 +101,8 @@ pub fn run(ctx: &Context, args: PatchArgs) -> Result<()> {
         lenient: args.lenient,
     };
 
-    let base = Document::read(&args.base, options)?;
+    let inputs = Inputs::new(ctx, &args.game, options);
+    let base = inputs.read(&args.base)?;
     let BinFile::Prop(mut bin) = base.file else {
         miette::bail!(
             "{} is a PTCH file. BASE must be a PROP bin. Pass the bin first, then the PTCH files that patch it",
@@ -102,7 +112,7 @@ pub fn run(ctx: &Context, args: PatchArgs) -> Result<()> {
 
     let mut applied = Vec::with_capacity(args.patches.len());
     for path in &args.patches {
-        let patch = match Document::read(path, options)?.file {
+        let patch = match inputs.read(path)?.file {
             BinFile::Override(patch) => patch,
             BinFile::Prop(_) => miette::bail!(
                 "{path} is a PROP bin, not a PTCH file. Create a PTCH file with `ritobin-tools diff <BASE> <EDITED> --patch <FILE>`"
@@ -204,7 +214,8 @@ pub fn run(ctx: &Context, args: PatchArgs) -> Result<()> {
 /// `--dry-run`.
 ///
 /// Fails if more than one input is standard input, if no output option is set, if `--in-place`
-/// is set while the base bin is standard input, or if `--output` is the path of an input.
+/// is set while the base bin is standard input or a bin of the game, or if `--output` is the
+/// path of an input.
 fn destination(args: &PatchArgs) -> Result<Option<Destination>> {
     let from_stdin = std::iter::once(&args.base)
         .chain(&args.patches)
@@ -223,6 +234,11 @@ fn destination(args: &PatchArgs) -> Result<Option<Destination>> {
         if args.base.as_str() == STDIO {
             miette::bail!(
                 "--in-place requires a file path for BASE, but BASE is standard input. Pass --output instead"
+            );
+        }
+        if game_bin(&args.base).is_some() {
+            miette::bail!(
+                "--in-place requires a file path for BASE, but BASE is a bin of the game. Pass --output instead"
             );
         }
         return Ok(Some(Destination {
@@ -423,7 +439,7 @@ mod tests {
     use ltk_meta::{Bin, BinObject, BinOverride, path::PropertyPath, property::values};
 
     use super::*;
-    use crate::document::to_bin;
+    use crate::document::{Document, to_bin};
 
     const OBJECT: u32 = 0x1111_0001;
     const OTHER: u32 = 0x1111_0002;
@@ -479,6 +495,7 @@ mod tests {
             format: OutputFormat::Table,
             keep_hashed: true,
             lenient: false,
+            game: GameArgs::default(),
             layout: LayoutArgs::default(),
         }
     }
@@ -591,6 +608,36 @@ mod tests {
         .unwrap();
         assert!(std::fs::read(&base).unwrap().starts_with(b"#PROP_text"));
         assert_eq!(read(&base), bin(2));
+    }
+
+    #[test]
+    fn run_patches_base_with_game_prefix_from_game() {
+        use crate::game::testing::Installation;
+
+        let installation = Installation::new();
+        installation.archive(
+            "A.wad.client",
+            &[("data/skin0.bin", &to_bin(&bin(1).into()).unwrap())],
+        );
+        let patch = installation.root.join("size.ptch");
+        write(&patch, set_size(OBJECT, 2));
+        let output = installation.root.join("out").join("skin0.bin");
+
+        run(
+            &context(),
+            PatchArgs {
+                output: Some(output.clone()),
+                game: GameArgs {
+                    game_dir: Some(installation.root.clone()),
+                    index_dir: Some(installation.root.join("index")),
+                },
+                ..args(Utf8Path::new("game:data/skin0.bin"), &[&patch])
+            },
+        )
+        .unwrap();
+        // The base is read as a binary bin, so the output is binary.
+        assert!(std::fs::read(&output).unwrap().starts_with(b"PROP"));
+        assert_eq!(read(&output), bin(2));
     }
 
     #[test]
@@ -774,6 +821,13 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("BASE is standard input"));
+
+        let error = destination(&PatchArgs {
+            in_place: true,
+            ..args(Utf8Path::new("game:data/skin0.bin"), &[patch])
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("BASE is a bin of the game"));
 
         let error = destination(&PatchArgs {
             dry_run: true,

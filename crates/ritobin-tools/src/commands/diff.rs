@@ -10,11 +10,10 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::{
     cli::LayoutArgs,
+    commands::{gamedata::GameArgs, input::Inputs},
     context::Context,
     diff::{BinDiff, Change, ChangeKind, Lifted, Summary},
-    document::{
-        Document, Format, ReadOptions, STDIO, TextLayout, encode, reads_back, to_text, write_bytes,
-    },
+    document::{Format, ReadOptions, STDIO, TextLayout, encode, reads_back, to_text, write_bytes},
     hashes::BinHashes,
     utils::{hyperlink_path, plural},
 };
@@ -25,10 +24,11 @@ const SUMMARY_VALUE_WIDTH: usize = 100;
 
 #[derive(Args, Debug)]
 pub struct DiffArgs {
-    /// The base bin (.bin or ritobin text)
+    /// The base bin: a .bin file, a ritobin text file, or `game:<BIN>` for a bin of the game.
+    /// `<BIN>` is a bin path, a chunk hash or an entry, as for `gamedata extract`
     pub base: Utf8PathBuf,
 
-    /// The edited bin (.bin or ritobin text)
+    /// The edited bin: a .bin file, a ritobin text file, or `game:<BIN>`
     pub edited: Utf8PathBuf,
 
     /// Output format. Defaults to the format of the output file extension, or to `unified`
@@ -67,6 +67,9 @@ pub struct DiffArgs {
     /// Read text that has problems. The invalid parts are skipped
     #[arg(long)]
     pub lenient: bool,
+
+    #[command(flatten)]
+    pub game: GameArgs,
 
     #[command(flatten)]
     pub layout: LayoutArgs,
@@ -110,8 +113,9 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
     let options = ReadOptions {
         lenient: args.lenient,
     };
-    let base = Document::read(&args.base, options)?;
-    let edited = Document::read(&args.edited, options)?;
+    let inputs = Inputs::new(ctx, &args.game, options);
+    let base = inputs.read(&args.base)?;
+    let edited = inputs.read(&args.edited)?;
 
     let hashes = match args.keep_hashed {
         true => BinHashes::none(),
@@ -524,7 +528,7 @@ mod tests {
     use ltk_meta::{Bin, BinObject, property::values};
 
     use super::*;
-    use crate::document::to_bin;
+    use crate::document::{Document, to_bin};
 
     const OBJECT: u32 = 0x1111_0001;
     const CLASS: u32 = 0xaaaa_0001;
@@ -562,6 +566,7 @@ mod tests {
             exit_code: false,
             keep_hashed: true,
             lenient: false,
+            game: GameArgs::default(),
             layout: LayoutArgs::default(),
         }
     }
@@ -715,6 +720,40 @@ mod tests {
         .unwrap();
         assert!(!differs);
         assert_eq!(std::fs::read_to_string(dir.join("out.diff")).unwrap(), "");
+    }
+
+    #[test]
+    fn run_reads_input_with_game_prefix_from_game() {
+        use crate::game::testing::Installation;
+
+        let installation = Installation::new();
+        installation.archive(
+            "A.wad.client",
+            &[("data/skin0.bin", &to_bin(&bin(1, false).into()).unwrap())],
+        );
+        let edited = installation.root.join("edited.bin");
+        std::fs::write(&edited, to_bin(&bin(2, false).into()).unwrap()).unwrap();
+        let output = installation.root.join("out.json");
+
+        let differs = run(
+            &context(),
+            DiffArgs {
+                output: Some(output.clone()),
+                game: GameArgs {
+                    game_dir: Some(installation.root.clone()),
+                    index_dir: Some(installation.root.join("index")),
+                },
+                ..args(Utf8Path::new("game:data/skin0.bin"), &edited)
+            },
+        )
+        .unwrap();
+        assert!(differs);
+
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+        assert_eq!(document["base"], "game:data/skin0.bin");
+        assert_eq!(document["changes"][0]["old"], "1");
+        assert_eq!(document["changes"][0]["new"], "2");
     }
 
     #[test]
