@@ -12,9 +12,9 @@ use std::{borrow::Cow, collections::HashSet, fmt::Write as _, io::Cursor, time::
 use clap::ValueEnum;
 use ltk_hash::{BinHash, Hash as _, WadHash};
 use ltk_meta::{
-    BinFile, BinKind, BinObject, BinStream, Error as BinError, PropertyKind as Kind,
+    BinFile, BinKind, BinObject, BinStream, Error as BinError, PropertyKind as Kind, PropertyPatch,
     PropertyValueEnum,
-    path::ValuePath,
+    path::{PropertyPath, ValuePath},
     walk::{ChildSegment, Leaf, Node, TreeKind as _, TreeValue, Visit, Visitor},
 };
 use ltk_mimir_cache::Table;
@@ -31,7 +31,8 @@ use crate::{
 /// A part of a bin that a search tests against the pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 pub enum Target {
-    /// Object paths
+    /// Object paths. In a PTCH file also the objects that the records and the delete list
+    /// address
     #[value(name = "entries", alias = "entry")]
     Entry,
     /// Classes of objects and of nested structs
@@ -64,6 +65,8 @@ pub enum Matched {
     Value,
     /// An item of the dependency list.
     Dependency,
+    /// An item of the delete list of a `PTCH` file.
+    Deleted,
 }
 
 /// The pattern of a [`Query`].
@@ -446,7 +449,10 @@ pub enum At {
     Object,
     /// An item of the dependency list of the bin.
     Dependency(String),
-    /// A property, a list item or a map entry of the object.
+    /// An item of the delete list of a `PTCH` file: the path hash of the deleted object.
+    Deleted(BinHash),
+    /// A property, a list item or a map entry of the object, or the value of a record of a
+    /// `PTCH` file.
     Value {
         /// The path of the value inside the object.
         path: ValuePath,
@@ -456,7 +462,19 @@ pub enum At {
         /// The key kind of a map.
         key_kind: Option<Kind>,
         shown: Shown,
+        /// The record that contains the value. `None` for a value of an object. If it is set,
+        /// the first segment of `path` is the last property name of the record path.
+        record: Option<RecordAt>,
     },
+}
+
+/// A record of a `PTCH` file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordAt {
+    /// The position of the record in the file, counting from 0.
+    pub index: usize,
+    /// The property path of the record.
+    pub path: PropertyPath,
 }
 
 /// The content of a matched value that is printed.
@@ -482,6 +500,12 @@ struct Scan<'m> {
     limit: usize,
     /// The class of the object that is being walked.
     object_class: BinHash,
+    /// The record whose value is being walked. `None` while an object is walked.
+    record: Option<RecordAt>,
+    /// `true` if the object of the record that is being walked matches the pattern.
+    record_entry: bool,
+    /// `true` if the walk of the current record added a hit on the value of the record itself.
+    record_root: bool,
     buffer: String,
 }
 
@@ -494,6 +518,9 @@ impl<'m> Scan<'m> {
             hits: Vec::new(),
             limit,
             object_class: BinHash(0),
+            record: None,
+            record_entry: false,
+            record_root: false,
             buffer: String::new(),
         }
     }
@@ -535,16 +562,107 @@ impl<'m> Scan<'m> {
         }
     }
 
+    /// Adds a hit for each item of the delete list of a `PTCH` file whose object matches the
+    /// pattern.
+    fn deleted(&mut self, deleted: &[BinHash]) {
+        let matcher = self.matcher;
+        // The delete list stores no class, so a class filter excludes every item.
+        if !matcher.targets.entry || matcher.object_class.is_some() {
+            return;
+        }
+        for object in deleted {
+            if self.is_full()
+                || !matcher.entries.contains(object)
+                || matcher.object.is_some_and(|wanted| wanted != *object)
+            {
+                continue;
+            }
+            self.count += 1;
+            if self.collect {
+                self.hits.push(Hit {
+                    matched: vec![Matched::Deleted],
+                    object: None,
+                    at: At::Deleted(*object),
+                });
+            }
+        }
+    }
+
+    /// Tests the record at position `index` of a `PTCH` file: the object that it addresses, the
+    /// last property name of its path, and its value.
+    ///
+    /// The value is walked as the only property of a temporary object. The items of a list and
+    /// the properties of a struct are therefore tested like the values of an object.
+    fn record(&mut self, index: usize, record: &PropertyPatch) -> Result<(), BinError> {
+        let matcher = self.matcher;
+        // A record stores no class of the object that it addresses, so a class filter excludes
+        // every record.
+        if matcher.object_class.is_some()
+            || matcher
+                .object
+                .is_some_and(|wanted| wanted != record.object_hash)
+        {
+            return Ok(());
+        }
+        let Some(last) = record.path.segments().last() else {
+            return Ok(());
+        };
+        let field = last.name_hash();
+        let object = BinObject::builder(record.object_hash, BinHash(0))
+            .property(field, record.value.clone())
+            .build();
+
+        self.record = Some(RecordAt {
+            index,
+            path: record.path.clone(),
+        });
+        self.record_entry = matcher.targets.entry && matcher.entries.contains(&record.object_hash);
+        self.record_root = false;
+        let first = self.hits.len();
+        let walked = object.walk(self);
+        let at = self.record.take();
+        walked?;
+
+        // The object of the record matches, and no hit is on the value of the record itself.
+        // The record gets a hit of its own, before the hits inside its value.
+        if self.record_entry && !self.record_root {
+            self.count += 1;
+            if self.collect {
+                let mut path = ValuePath::new();
+                path.push_field(field, BinHash(0));
+                self.hits.insert(
+                    first,
+                    Hit {
+                        matched: vec![Matched::Entry],
+                        object: Some((record.object_hash, BinHash(0))),
+                        at: value_at(path, &record.value, at)?,
+                    },
+                );
+                self.hits.truncate(self.limit);
+            }
+            self.count = self.count.min(self.limit);
+        }
+        Ok(())
+    }
+
     /// Adds a hit for `value`, which is the property `field` of `node`, or the item of that
     /// property at `child`.
     fn value_hit<'a, V: TreeValue<'a>>(
         &mut self,
-        matched: Vec<Matched>,
+        mut matched: Vec<Matched>,
         node: &Node<'_, 'a, V>,
         field: BinHash,
         child: Option<ChildSegment<V>>,
         value: V,
     ) -> Result<(), BinError> {
+        // A hit on the value of a record itself also reports a match of the object that the
+        // record addresses.
+        if self.record.is_some() && node.is_root() && child.is_none() {
+            self.record_root = true;
+            if self.record_entry {
+                matched.insert(0, Matched::Entry);
+            }
+        }
         self.count += 1;
         if !self.collect {
             return Ok(());
@@ -557,25 +675,36 @@ impl<'m> Scan<'m> {
             None => {}
         }
 
-        let declaration = value.declaration()?;
-        let shown = match (value.as_leaf()?, declaration.class) {
-            (Some(_), _) => Shown::Leaf(value.to_value()?),
-            (None, Some(class)) => Shown::Class(class),
-            (None, None) => Shown::Count(declaration.count.unwrap_or(0)),
-        };
         self.hits.push(Hit {
             matched,
             object: Some((node.object_hash(), self.object_class)),
-            at: At::Value {
-                path,
-                kind: declaration.kind,
-                item_kind: declaration.item_kind,
-                key_kind: declaration.key_kind,
-                shown,
-            },
+            at: value_at(path, value, self.record.clone())?,
         });
         Ok(())
     }
+}
+
+/// Returns the location of a hit on `value`, which is at `path`. `record` is the record of a
+/// `PTCH` file that contains the value.
+fn value_at<'a, V: TreeValue<'a>>(
+    path: ValuePath,
+    value: V,
+    record: Option<RecordAt>,
+) -> Result<At, BinError> {
+    let declaration = value.declaration()?;
+    let shown = match (value.as_leaf()?, declaration.class) {
+        (Some(_), _) => Shown::Leaf(value.to_value()?),
+        (None, Some(class)) => Shown::Class(class),
+        (None, None) => Shown::Count(declaration.count.unwrap_or(0)),
+    };
+    Ok(At::Value {
+        path,
+        kind: declaration.kind,
+        item_kind: declaration.item_kind,
+        key_kind: declaration.key_kind,
+        shown,
+        record,
+    })
 }
 
 impl<'a, V: TreeValue<'a>> Visitor<'a, V> for Scan<'_> {
@@ -590,6 +719,11 @@ impl<'a, V: TreeValue<'a>> Visitor<'a, V> for Scan<'_> {
         let matcher = self.matcher;
         let (object, class) = (node.object_hash(), node.class_hash());
         self.object_class = class;
+        // The root node of a record walk is a temporary object. `record` tests the object that
+        // the record addresses.
+        if self.record.is_some() {
+            return Ok(self.proceed());
+        }
 
         let mut matched = Vec::new();
         if matcher.targets.entry && matcher.entries.contains(&object) {
@@ -699,7 +833,8 @@ impl<'a, V: TreeValue<'a>> Visitor<'a, V> for Scan<'_> {
 /// hits, in document order. `name` is the file name shown in error messages.
 ///
 /// A `PROP` bin is read as a stream, one object at a time. Ritobin text and a `PTCH` bin are
-/// parsed completely first. The records of a `PTCH` bin are not searched, only its objects.
+/// parsed completely first. The delete list, the objects and the records of a `PTCH` bin are
+/// searched in this order.
 pub fn scan(name: &str, data: Vec<u8>, matcher: &Matcher, limit: usize) -> Result<Vec<Hit>> {
     let mut scan = Scan::new(matcher, limit, true);
     scan_document(name, data, &mut scan)?;
@@ -763,6 +898,9 @@ fn scan_file(file: &BinFile, scan: &mut Scan<'_>) -> Result<(), BinError> {
     if !matcher.reads_objects() {
         return Ok(());
     }
+    if let BinFile::Override(patch) = file {
+        scan.deleted(&patch.deleted);
+    }
 
     let wanted = |object: &&BinObject| matcher.wants_object(object.path_hash, object.class_hash);
     for object in objects.values().filter(wanted) {
@@ -770,6 +908,15 @@ fn scan_file(file: &BinFile, scan: &mut Scan<'_>) -> Result<(), BinError> {
             break;
         }
         object.walk(scan)?;
+    }
+
+    if let BinFile::Override(patch) = file {
+        for (index, record) in patch.patches.iter().enumerate() {
+            if scan.is_full() {
+                break;
+            }
+            scan.record(index, record)?;
+        }
     }
     Ok(())
 }
@@ -798,6 +945,10 @@ pub struct Row {
     pub value: Option<String>,
     /// The item count of a list, an option or a map.
     pub count: Option<usize>,
+    /// The position of the record of a `PTCH` file that contains the hit, counting from 0.
+    /// `None` for a hit that is not in a record. For a hit in a record, `class` is `None` and
+    /// `path` starts with the property path of the record.
+    pub record: Option<usize>,
 }
 
 impl Row {
@@ -824,10 +975,18 @@ impl Row {
             value_type: None,
             value: None,
             count: None,
+            record: None,
         };
 
         match &hit.at {
             At::Object => {}
+            At::Deleted(object) => {
+                row.value_type = Some(Kind::Hash.to_rito_name().to_owned());
+                row.value = Some(match names.bins.lookup(Table::BinEntries, *object) {
+                    Some(name) => quote(&name),
+                    None => format_hash(*object),
+                });
+            }
             At::Dependency(dependency) => {
                 row.value_type = Some(Kind::String.to_rito_name().to_owned());
                 row.value = Some(quote(dependency));
@@ -838,12 +997,24 @@ impl Row {
                 item_kind,
                 key_kind,
                 shown,
+                record,
             } => {
                 let subtypes = match (key_kind, item_kind) {
                     (Some(key), Some(value)) => [Some(*key), Some(*value)],
                     (_, item) => [*item, None],
                 };
-                row.path = Some(path.to_named(&names.bins).text);
+                let named = path.to_named(&names.bins).text;
+                row.path = Some(match record {
+                    // The first segment of `path` is a property name. It stands for the whole
+                    // record path. The text after it starts with `.`, `[` or `{`.
+                    Some(record) => {
+                        row.class = None;
+                        row.record = Some(record.index);
+                        let inside = named.find(['.', '[', '{']).map_or("", |at| &named[at..]);
+                        format!("{}{inside}", record.path)
+                    }
+                    None => named,
+                });
                 row.value_type = Some(RitoType::new(*kind, subtypes).to_string());
                 match shown {
                     // The owned tree does not fail to decode a leaf.
@@ -1121,6 +1292,7 @@ entries: map[hash,embed] = {
                 let name = row.object_name.as_ref().unwrap_or(object);
                 return format!("{name} : {}", row.class.as_deref().unwrap());
             }
+            (None, None) if row.matched.contains(&Matched::Deleted) => "deleted".to_owned(),
             (None, None) => "linked".to_owned(),
         };
         if let Some(value_type) = &row.value_type {
@@ -1499,6 +1671,136 @@ entries: map[hash,embed] = {
         let matcher = Matcher::compile(&literal("mushroom"), &names.bins, &names.paths).unwrap();
         let hits = scan("patch.bin", patch, &matcher, usize::MAX).unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    const PATCH: &str = r#"#PTCH_text
+type: string = "PTCH"
+version: u32 = 3
+linked: list[string] = { }
+entries: map[hash, embed] = { }
+patches: map[hash, embed] = {
+    "Characters/Teemo/Skins/Skin0" = patch {
+        path: string = "skinMeshProperties.selfIllumination"
+        value: f32 = 0.25
+    }
+    "Characters/Teemo/Skins/Skin0" = patch {
+        path: string = "skinMeshProperties.materialOverride"
+        value: list[embed] = {
+            SkinMeshDataProperties_MaterialOverride {
+                submesh: string = "Cap"
+            }
+        }
+    }
+}
+"#;
+
+    /// Searches [`PATCH`] as a binary `PTCH` file whose delete list has the animation entry.
+    /// Returns each row as its matched parts, its record position and its line.
+    fn found_in_patch(query: &Query) -> Vec<(Vec<Matched>, Option<usize>, String)> {
+        let document = Document::parse("edit.ptch", PATCH.into(), ReadOptions::default()).unwrap();
+        let BinFile::Override(mut patch) = document.file else {
+            panic!("not a PTCH file");
+        };
+        patch
+            .deleted
+            .push(BinHash::hash_str("Characters/Teemo/Animations/Skin0"));
+        let data = to_bin(&patch.into()).unwrap();
+
+        let names = names();
+        let matcher = Matcher::compile(query, &names.bins, &names.paths).unwrap();
+        let hits = scan("edit.ptch", data.clone(), &matcher, usize::MAX).unwrap();
+        assert_eq!(
+            count("edit.ptch", data, &matcher, usize::MAX).unwrap(),
+            hits.len()
+        );
+        hits.iter()
+            .map(|hit| {
+                let row = Row::new(hit, &names);
+                assert_eq!(
+                    row.class.is_none(),
+                    row.record.is_some() || row.object.is_none()
+                );
+                (row.matched.clone(), row.record, show(&row))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scan_reads_delete_list_and_records_of_patch_bin() {
+        // The pattern matches both entries: the deleted one, and the one that both records
+        // address.
+        assert_eq!(
+            found_in_patch(&literal("skin0")),
+            [
+                (
+                    vec![Matched::Deleted],
+                    None,
+                    "deleted: hash = \"Characters/Teemo/Animations/Skin0\"".to_owned()
+                ),
+                (
+                    vec![Matched::Entry],
+                    Some(0),
+                    "skinMeshProperties.selfIllumination: f32 = 0.25".to_owned()
+                ),
+                (
+                    vec![Matched::Entry],
+                    Some(1),
+                    "skinMeshProperties.materialOverride: list[embed] (1)".to_owned()
+                ),
+            ]
+        );
+
+        // A value inside the value of a record. Its path continues the record path.
+        assert_eq!(
+            found_in_patch(&literal("cap")),
+            [(
+                vec![Matched::Value],
+                Some(1),
+                "skinMeshProperties.materialOverride[0].submesh: string = \"Cap\"".to_owned()
+            )]
+        );
+
+        // The last property name of a record path, and the value of the record.
+        assert_eq!(
+            found_in_patch(&literal("selfIllumination")),
+            [(
+                vec![Matched::Field],
+                Some(0),
+                "skinMeshProperties.selfIllumination: f32 = 0.25".to_owned()
+            )]
+        );
+        assert_eq!(
+            found_in_patch(&literal("0.25")),
+            [(
+                vec![Matched::Value],
+                Some(0),
+                "skinMeshProperties.selfIllumination: f32 = 0.25".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn object_filters_apply_to_delete_list_and_records_of_patch_bin() {
+        let animation = BinHash::hash_str("Characters/Teemo/Animations/Skin0");
+        let with_object = |object| Query {
+            object: Some(object),
+            ..literal("skin0")
+        };
+        assert_eq!(found_in_patch(&with_object(animation)).len(), 1);
+        assert_eq!(
+            found_in_patch(&with_object(BinHash::hash_str(
+                "Characters/Teemo/Skins/Skin0"
+            )))
+            .len(),
+            2
+        );
+
+        // A record and the delete list store no class.
+        let with_class = Query {
+            object_class: Some(BinHash::hash_str("SkinCharacterDataProperties")),
+            ..literal("skin0")
+        };
+        assert!(found_in_patch(&with_class).is_empty());
     }
 
     #[test]

@@ -727,12 +727,15 @@ impl<W: Write> Printer<'_, W> {
                     )?,
                     None => writeln!(self.out, "{}", source.magenta().bold())?,
                 }
-                let mut object = None;
+                // The hits of an object and the hits of the records that address the same
+                // object have separate headings.
+                let mut group = None;
                 for hit in hits {
                     let row = Row::new(hit, self.names);
-                    if row.object.is_some() && row.object != object {
+                    let key = Some((row.object.clone(), row.record.is_some()));
+                    if row.object.is_some() && key != group {
                         writeln!(self.out, "{}", heading(&row))?;
-                        object.clone_from(&row.object);
+                        group = key;
                     }
                     if let Some(line) = line(&row) {
                         writeln!(self.out, "{line}")?;
@@ -793,14 +796,19 @@ fn heading(row: &Row) -> String {
         .as_deref()
         .or(row.object.as_deref())
         .unwrap_or_default();
+    let class = match row.record {
+        Some(_) => "patch records",
+        None => row.class.as_deref().unwrap_or_default(),
+    };
     format!(
         "  {} : {}",
-        highlight(name, on_object(Matched::Entry), |text| text.green()),
         highlight(
-            row.class.as_deref().unwrap_or_default(),
-            on_object(Matched::Class),
-            |text| text.cyan()
-        )
+            name,
+            on_object(Matched::Entry)
+                || (row.record.is_some() && row.matched.contains(&Matched::Entry)),
+            |text| text.green()
+        ),
+        highlight(class, on_object(Matched::Class), |text| text.cyan())
     )
 }
 
@@ -812,7 +820,10 @@ fn line(row: &Row) -> Option<String> {
     let value = row.value.as_deref().map(|value| {
         highlight(
             value,
-            matched(Matched::Value) || matched(Matched::Class) || matched(Matched::Dependency),
+            matched(Matched::Value)
+                || matched(Matched::Class)
+                || matched(Matched::Dependency)
+                || matched(Matched::Deleted),
             |text| text.normal(),
         )
     });
@@ -826,6 +837,7 @@ fn line(row: &Row) -> Option<String> {
                 |text| text.normal()
             )
         ),
+        None if matched(Matched::Deleted) => format!("  deleted: {value_type}"),
         None if row.object.is_none() => format!("  linked: {value_type}"),
         None => return None,
     };

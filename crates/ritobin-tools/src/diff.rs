@@ -4,13 +4,16 @@
 //! value, object and dependency that differs, including removals. The patch is the `PTCH` that
 //! [`Bin::diff_with`] generates for the same two bins. A patch cannot express every change, so
 //! applying it to the base bin does not always reproduce the edited bin.
+//!
+//! [`BinDiff::between_patches`] compares two `PTCH` files: their delete lists, their objects
+//! and their records. It generates no patch.
 
 use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use ltk_hash::BinHash;
 use ltk_meta::{
-    Bin, BinObject, BinOverride, DiffOptions, DiffReport, Lift, PropertyValueEnum,
+    Bin, BinObject, BinOverride, DiffOptions, DiffReport, Lift, PropertyPatch, PropertyValueEnum,
     path::{MapKey, ValuePath},
     property::values,
 };
@@ -42,6 +45,26 @@ pub enum ChangeKind {
     DependencyAdded,
     /// The dependency exists only in the base bin.
     DependencyRemoved,
+    /// The object is only in the delete list of the edited `PTCH` file.
+    DeletionAdded,
+    /// The object is only in the delete list of the base `PTCH` file.
+    DeletionRemoved,
+    /// Only the edited `PTCH` file has a record for this object and this property path.
+    RecordAdded,
+    /// Only the base `PTCH` file has a record for this object and this property path.
+    RecordRemoved,
+    /// Both `PTCH` files have the record, with different values.
+    RecordChanged,
+}
+
+impl ChangeKind {
+    /// Returns `true` for a change of a record of a `PTCH` file.
+    pub fn is_record(self) -> bool {
+        matches!(
+            self,
+            Self::RecordAdded | Self::RecordRemoved | Self::RecordChanged
+        )
+    }
 }
 
 /// One difference between two bins.
@@ -55,10 +78,11 @@ pub struct Change {
     pub object: Option<String>,
     /// The path of the object, if the entry table has it.
     pub object_name: Option<String>,
-    /// The class of the object.
+    /// The class of the object. `None` for a change of a record or of a delete list, because
+    /// a `PTCH` file does not store the class of the object that these address.
     pub class: Option<String>,
-    /// The path of the value inside the object. `None` for a whole-object change or a
-    /// dependency change.
+    /// The path of the value inside the object, or the property path of a record. `None` for
+    /// a whole-object change, a dependency change or a delete list change.
     pub path: Option<String>,
     /// The ritobin type of the value.
     #[serde(rename = "type")]
@@ -91,6 +115,11 @@ pub struct Summary {
     pub values_changed: usize,
     pub dependencies_added: usize,
     pub dependencies_removed: usize,
+    pub deletions_added: usize,
+    pub deletions_removed: usize,
+    pub records_added: usize,
+    pub records_removed: usize,
+    pub records_changed: usize,
 }
 
 /// The difference between a base bin and an edited bin.
@@ -109,6 +138,9 @@ pub struct BinDiff {
     /// It is `false` if the edited bin removes a property or a map entry, or removes an object
     /// while deletions are disabled. A patch has no record type for these changes.
     pub patch_is_exact: bool,
+    /// `true` if `patch` was generated from two `PROP` bins. `false` for the difference of two
+    /// `PTCH` files, which generates no patch. `patch` and `report` are then empty.
+    pub has_patch: bool,
 }
 
 impl BinDiff {
@@ -143,6 +175,34 @@ impl BinDiff {
             patch,
             report,
             patch_is_exact,
+            has_patch: true,
+        }
+    }
+
+    /// Computes the difference from the `PTCH` file `base` to the `PTCH` file `edited`: the
+    /// changes of the delete list, of the objects and of the records, in this order.
+    ///
+    /// A record is identified by its object and its property path. If a file has several
+    /// records with the same object and path, the last one is compared, because it is the one
+    /// that remains after the file is applied.
+    pub fn between_patches(base: &BinOverride, edited: &BinOverride, hashes: &BinHashes) -> Self {
+        let mut walker = Walker {
+            hashes,
+            changes: Vec::new(),
+            object: BinHash(0),
+            class: BinHash(0),
+            path: ValuePath::new(),
+        };
+        walker.deletions(&base.deleted, &edited.deleted);
+        walker.objects(&base.objects, &edited.objects);
+        walker.records(&base.patches, &edited.patches);
+
+        Self {
+            changes: walker.changes,
+            patch: BinOverride::new(),
+            report: DiffReport::default(),
+            patch_is_exact: true,
+            has_patch: false,
         }
     }
 
@@ -165,6 +225,11 @@ impl BinDiff {
                 ChangeKind::Changed => &mut summary.values_changed,
                 ChangeKind::DependencyAdded => &mut summary.dependencies_added,
                 ChangeKind::DependencyRemoved => &mut summary.dependencies_removed,
+                ChangeKind::DeletionAdded => &mut summary.deletions_added,
+                ChangeKind::DeletionRemoved => &mut summary.deletions_removed,
+                ChangeKind::RecordAdded => &mut summary.records_added,
+                ChangeKind::RecordRemoved => &mut summary.records_removed,
+                ChangeKind::RecordChanged => &mut summary.records_changed,
             };
             *counter += 1;
             if matches!(
@@ -227,10 +292,114 @@ impl Walker<'_> {
                 self.dependency(ChangeKind::DependencyRemoved, dependency);
             }
         }
+        self.objects(&base.objects, &edited.objects);
+    }
 
-        for (object_hash, object) in &edited.objects {
+    /// Compares the delete lists of two `PTCH` files.
+    fn deletions(&mut self, base: &[BinHash], edited: &[BinHash]) {
+        let mut change = |kind, object: BinHash| {
+            self.changes.push(Change {
+                kind,
+                object: Some(format_hash(object)),
+                object_name: self
+                    .hashes
+                    .lookup(Table::BinEntries, object)
+                    .map(Into::into),
+                class: None,
+                path: None,
+                value_type: None,
+                old: None,
+                new: None,
+            });
+        };
+        for object in edited.iter().filter(|object| !base.contains(object)) {
+            change(ChangeKind::DeletionAdded, *object);
+        }
+        for object in base.iter().filter(|object| !edited.contains(object)) {
+            change(ChangeKind::DeletionRemoved, *object);
+        }
+    }
+
+    /// Compares the records of two `PTCH` files. The changes are grouped by object, in the
+    /// order of the edited file. Records that only the base file has come last.
+    fn records(&mut self, base: &[PropertyPatch], edited: &[PropertyPatch]) {
+        // The last record of each object and path.
+        let last = |records: &'_ [PropertyPatch]| {
+            let mut by_key: IndexMap<(BinHash, String), PropertyValueEnum> = IndexMap::new();
+            for record in records {
+                let key = (record.object_hash, record.path.as_str().to_owned());
+                by_key.insert(key, record.value.clone());
+            }
+            by_key
+        };
+        let (base, edited) = (last(base), last(edited));
+
+        let mut changes: Vec<(BinHash, Change)> = Vec::new();
+        let mut change = |kind, key: &(BinHash, String), old, new| {
+            let text = |value: Option<&PropertyValueEnum>| {
+                value.map(|value| value_text(value, self.hashes))
+            };
+            let (old, new) = (text(old), text(new));
+            let value_type = match (&old, &new) {
+                (Some((old_type, _)), Some((new_type, _))) if old_type != new_type => {
+                    Some(format!("{old_type} -> {new_type}"))
+                }
+                (_, Some((value_type, _))) | (Some((value_type, _)), None) => {
+                    Some(value_type.clone())
+                }
+                (None, None) => None,
+            };
+            changes.push((
+                key.0,
+                Change {
+                    kind,
+                    object: Some(format_hash(key.0)),
+                    object_name: self.hashes.lookup(Table::BinEntries, key.0).map(Into::into),
+                    class: None,
+                    path: Some(key.1.clone()),
+                    value_type,
+                    old: old.map(|(_, text)| text),
+                    new: new.map(|(_, text)| text),
+                },
+            ));
+        };
+        for (key, value) in &edited {
+            match base.get(key) {
+                None => change(ChangeKind::RecordAdded, key, None, Some(value)),
+                Some(existing) if existing != value => {
+                    change(ChangeKind::RecordChanged, key, Some(existing), Some(value));
+                }
+                Some(_) => {}
+            }
+        }
+        for (key, value) in &base {
+            if !edited.contains_key(key) {
+                change(ChangeKind::RecordRemoved, key, Some(value), None);
+            }
+        }
+
+        // A stable sort by the first position of each object keeps the records of one object
+        // together, so that the `summary` format prints one heading per object.
+        let mut order: Vec<BinHash> = Vec::new();
+        for (object, _) in &changes {
+            if !order.contains(object) {
+                order.push(*object);
+            }
+        }
+        changes.sort_by_key(|(object, _)| order.iter().position(|first| first == object));
+        self.changes
+            .extend(changes.into_iter().map(|(_, change)| change));
+    }
+
+    /// Compares two object lists.
+    fn objects(
+        &mut self,
+        base: &IndexMap<BinHash, BinObject>,
+        edited: &IndexMap<BinHash, BinObject>,
+    ) {
+        for (object_hash, object) in edited {
             self.enter(object);
-            match base.objects.get(object_hash) {
+            match base.get(object_hash) {
                 None => self.whole_object(ChangeKind::ObjectAdded, None, None),
                 Some(existing) if existing.class_hash != object.class_hash => self.whole_object(
                     ChangeKind::ObjectReplaced,
@@ -242,8 +411,8 @@ impl Walker<'_> {
                 }
             }
         }
-        for (object_hash, object) in &base.objects {
-            if !edited.objects.contains_key(object_hash) {
+        for (object_hash, object) in base {
+            if !edited.contains_key(object_hash) {
                 self.enter(object);
                 self.whole_object(ChangeKind::ObjectRemoved, None, None);
             }
@@ -544,6 +713,111 @@ mod tests {
 
     fn kinds(diff: &BinDiff) -> Vec<ChangeKind> {
         diff.changes.iter().map(|change| change.kind).collect()
+    }
+
+    #[test]
+    fn between_patches_compares_delete_lists_objects_and_records() {
+        use ltk_meta::path::PropertyPath;
+
+        let path = |text: &str| PropertyPath::new(text).unwrap();
+        let object = |value: i32| {
+            let mut object = BinObject::new(0x3u32, CLASS);
+            object
+                .properties
+                .insert(BinHash(0x10), values::I32::new(value).into());
+            object
+        };
+        let base = BinOverride::builder()
+            .delete(0x1u32)
+            .delete(0x2u32)
+            .object(object(1))
+            .set(OBJECT, path("Size"), values::I32::new(1))
+            .set(OBJECT, path("Name"), values::String::from("base"))
+            .set(OBJECT, path("Removed"), values::Bool::new(true))
+            .build();
+        // The record of `Size` is written twice. The last one is compared.
+        let edited = BinOverride::builder()
+            .delete(0x2u32)
+            .delete(0x9u32)
+            .object(object(2))
+            .set(OBJECT, path("Size"), values::I32::new(7))
+            .set(OBJECT, path("Name"), values::String::from("base"))
+            .set(0x5u32, path("Added"), values::F32::new(0.5))
+            .set(OBJECT, path("Size"), values::I32::new(2))
+            .build();
+
+        let diff = BinDiff::between_patches(&base, &edited, &BinHashes::none());
+        assert!(!diff.has_patch);
+        assert!(diff.patch.is_empty());
+        let rows: Vec<_> = diff
+            .changes
+            .iter()
+            .map(|change| {
+                (
+                    change.kind,
+                    change.object.as_deref().unwrap(),
+                    change.path.as_deref(),
+                    change.old.as_deref(),
+                    change.new.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (ChangeKind::DeletionAdded, "0x00000009", None, None, None),
+                (ChangeKind::DeletionRemoved, "0x00000001", None, None, None),
+                (
+                    ChangeKind::Changed,
+                    "0x00000003",
+                    Some("00000010"),
+                    Some("1"),
+                    Some("2")
+                ),
+                (
+                    ChangeKind::RecordChanged,
+                    "0x11110001",
+                    Some("Size"),
+                    Some("1"),
+                    Some("2")
+                ),
+                (
+                    ChangeKind::RecordRemoved,
+                    "0x11110001",
+                    Some("Removed"),
+                    Some("true"),
+                    None
+                ),
+                (
+                    ChangeKind::RecordAdded,
+                    "0x00000005",
+                    Some("Added"),
+                    None,
+                    Some("0.5")
+                ),
+            ]
+        );
+        // A record change has no class, because a record stores none.
+        assert!(
+            diff.changes
+                .iter()
+                .all(|change| change.class.is_none() == (change.kind != ChangeKind::Changed))
+        );
+
+        let summary = diff.summary();
+        assert_eq!((summary.deletions_added, summary.deletions_removed), (1, 1));
+        assert_eq!(
+            (
+                summary.records_added,
+                summary.records_removed,
+                summary.records_changed
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(summary.values_changed, 1);
+
+        let same = BinDiff::between_patches(&base, &base, &BinHashes::none());
+        assert!(same.is_empty());
     }
 
     #[test]

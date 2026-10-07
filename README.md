@@ -198,7 +198,7 @@ Every format except `unified` and `rito` lists changes. A change has these field
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `changed`, `added`, `removed`, `object_added`, `object_removed`, `object_replaced`, `dependency_added` or `dependency_removed` |
+| `kind` | `changed`, `added`, `removed`, `object_added`, `object_removed`, `object_replaced`, `dependency_added` or `dependency_removed`. For two `PTCH` files also `record_added`, `record_removed`, `record_changed`, `deletion_added` and `deletion_removed` |
 | `object` | Path hash of the object, as `0x` hex |
 | `object_name` | Path of the object, if the hashtables have it |
 | `class` | Class of the object, as a name or `0x` hex |
@@ -241,7 +241,22 @@ A patch contains a list of records, a list of whole objects and a delete list. E
 
 The tool logs a warning if a limitation affects the patch. The `json` format lists each affected location under `patch.lifted`. `patch.exact` is `true` if applying the patch to `BASE` produces exactly `EDITED`.
 
-The other formats and `--patch` require two `PROP` bins. If either input is a `PTCH` file, use the `unified` format.
+#### Comparing two PTCH files
+
+Every format except `rito` also compares two `PTCH` files. The changes are:
+
+- `deletion_added` and `deletion_removed`: an object that only one delete list has.
+- The object changes of two bins, for the whole objects of the two files.
+- `record_added`, `record_removed` and `record_changed`: a record is identified by its object and its property path. `path` is the property path of the record, `old` and `new` are its values, and `class` is empty, because a record does not store the class of its object.
+
+```
++ delete "Characters/Test/Skins/Skin9"
+~ "Characters/Test/Skins/Skin0" (patch records)
+  ~ skinMeshProperties.selfIllumination: f32 = 0.25 -> 0.5
+  + skinScale: f32 = 1.1
+```
+
+The `json` format has `patch: null` for two `PTCH` files, because no patch is generated. `--patch` and the `rito` format require two `PROP` bins. To compare a `PROP` bin with a `PTCH` file, use the `unified` format, or apply the `PTCH` file with [patch](#patch) first.
 
 ### patch
 
@@ -413,7 +428,7 @@ A search tests five parts of a bin. `--in` selects them:
 
 | Part | Tested |
 | --- | --- |
-| `entries` | The path of each object |
+| `entries` | The path of each object. In a `PTCH` file also the object of each record and each item of the delete list |
 | `classes` | The class of each object and of each nested struct |
 | `fields` | The name of each property |
 | `values` | Each value without nested values, each list item, and each map key and map value |
@@ -456,12 +471,20 @@ Fields of the `json` and `jsonl` formats:
 | --- | --- |
 | `source` | Path of the file, or path of the bin in the game |
 | `archive` | Game archive that contains the bin. Missing for a file |
-| `matched` | The parts that matched: `entry`, `class`, `field`, `key`, `value` or `dependency` |
+| `matched` | The parts that matched: `entry`, `class`, `field`, `key`, `value`, `dependency` or `deleted` |
 | `object`, `object_name`, `class` | The object that contains the match, as for [diff](#diff) |
 | `path` | Path of the value inside the object. `null` for a match on the object itself or on a dependency |
 | `type` | Ritobin type of the value |
 | `value` | The value as ritobin text. For a struct, its class |
 | `count` | Item count of a list, an option or a map |
+| `record` | Position of the record of a `PTCH` file that contains the match, counting from 0. `null` for any other match |
+
+A `PTCH` file is searched in three parts: its delete list, its whole objects and its records.
+
+- A match in a record has `record` set. `class` is `null`, because a record does not store the class of its object. `path` is the property path of the record, followed by the path inside the value of the record. The text format prints these matches under the heading `<object> : patch records`.
+- A record matches `entries` if the object that it addresses matches, and `fields` if the last property name of its path matches.
+- A match in the delete list has `matched: ["deleted"]` and the deleted object in `value`. The text format prints it as `deleted: hash = "<object>"`.
+- `--object-class` excludes the records and the delete list, because they store no class.
 
 The exit code is 0 if at least one match was found, 1 if nothing matched, and 2 if the command failed.
 
@@ -469,7 +492,6 @@ A game search reads the list of bins from the object index, see [gamedata](#game
 
 Limitations:
 
-- The records of a `PTCH` bin are not searched, only its objects.
 - A game bin that declares no object is not searched.
 - A file path is matched by text only if the `game` hashtable is installed. It is always matched by its hash.
 

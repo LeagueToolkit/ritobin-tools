@@ -150,6 +150,9 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
         (BinFile::Prop(base), BinFile::Prop(edited)) => {
             Some(BinDiff::between(base, edited, &hashes, args.deletions))
         }
+        (BinFile::Override(base), BinFile::Override(edited)) => {
+            Some(BinDiff::between_patches(base, edited, &hashes))
+        }
         _ => None,
     };
     let structural = || {
@@ -159,9 +162,16 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
                 BinFile::Prop(_) => &args.edited,
             };
             miette::miette!(
-                "{patch} is a PTCH file. This format and --patch require two PROP bins. Use --format unified without --patch"
+                "{patch} is a PTCH file and the other input is a PROP bin. This format compares two PROP bins or two PTCH files. Use --format unified, or apply the PTCH file with `ritobin-tools patch` first"
             )
         })
+    };
+    // A patch is generated only from two `PROP` bins.
+    let generated = || match structural()? {
+        diff if diff.has_patch => Ok(diff),
+        _ => Err(miette::miette!(
+            "Both inputs are PTCH files. --patch and --format rito generate a PTCH file from two PROP bins"
+        )),
     };
 
     let (rendered, differs) = match format {
@@ -206,7 +216,7 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
             (csv(diff)?, !diff.is_empty())
         }
         DiffFormat::Rito => {
-            let diff = structural()?;
+            let diff = generated()?;
             let patch = BinFile::Override(diff.patch.clone());
             (
                 to_text(&patch, layout, &hashes).into_diagnostic()?,
@@ -227,7 +237,7 @@ pub fn run(ctx: &Context, args: DiffArgs) -> Result<bool> {
     }
 
     if let Some(path) = &args.patch {
-        save_patch(structural()?, path, layout, &hashes)?;
+        save_patch(generated()?, path, layout, &hashes)?;
     }
 
     Ok(differs)
@@ -336,7 +346,7 @@ fn summary(diff: &BinDiff) -> String {
         return out;
     }
 
-    let mut current: Option<&str> = None;
+    let mut current: Option<(Option<&str>, bool)> = None;
     for change in &diff.changes {
         let object = object_label(change);
         match change.kind {
@@ -354,15 +364,31 @@ fn summary(diff: &BinDiff) -> String {
             ChangeKind::ObjectRemoved => {
                 let _ = writeln!(out, "{}", format!("- {object}").red());
             }
+            ChangeKind::DeletionAdded => {
+                let name = object_name(change);
+                let _ = writeln!(out, "{}", format!("+ delete {name}").green());
+            }
+            ChangeKind::DeletionRemoved => {
+                let name = object_name(change);
+                let _ = writeln!(out, "{}", format!("- delete {name}").red());
+            }
             ChangeKind::ObjectReplaced => {
                 let name = object_name(change);
                 let old = change.old.as_deref().unwrap_or_default();
                 let new = change.new.as_deref().unwrap_or_default();
                 let _ = writeln!(out, "{}", format!("~ {name} ({old} -> {new})").yellow());
             }
-            ChangeKind::Added | ChangeKind::Removed | ChangeKind::Changed => {
-                if current != change.object.as_deref() {
-                    current = change.object.as_deref();
+            ChangeKind::Added
+            | ChangeKind::Removed
+            | ChangeKind::Changed
+            | ChangeKind::RecordAdded
+            | ChangeKind::RecordRemoved
+            | ChangeKind::RecordChanged => {
+                // The values of an object and the records that address the same object have
+                // separate headings.
+                let group = Some((change.object.as_deref(), change.kind.is_record()));
+                if current != group {
+                    current = group;
                     let _ = writeln!(out, "{}", format!("~ {object}").yellow().bold());
                 }
                 let path = change.path.as_deref().unwrap_or_default();
@@ -370,10 +396,10 @@ fn summary(diff: &BinDiff) -> String {
                 let old = change.old.as_deref().map(one_line);
                 let new = change.new.as_deref().map(one_line);
                 let line = match change.kind {
-                    ChangeKind::Added => {
+                    ChangeKind::Added | ChangeKind::RecordAdded => {
                         format!("  + {path}: {value_type} = {}", new.unwrap_or_default()).green()
                     }
-                    ChangeKind::Removed => {
+                    ChangeKind::Removed | ChangeKind::RecordRemoved => {
                         format!("  - {path}: {value_type} = {}", old.unwrap_or_default()).red()
                     }
                     _ => format!(
@@ -401,9 +427,13 @@ fn object_name(change: &Change) -> String {
     }
 }
 
-/// Returns the object name followed by the class in parentheses.
+/// Returns the object name followed by the class in parentheses. For a record change the
+/// text in parentheses is `patch records`.
 fn object_label(change: &Change) -> String {
-    let class = change.class.as_deref().unwrap_or_default();
+    let class = match change.kind.is_record() {
+        true => "patch records",
+        false => change.class.as_deref().unwrap_or_default(),
+    };
     format!("{} ({class})", object_name(change))
 }
 
@@ -441,6 +471,21 @@ fn counts(summary: &Summary) -> String {
             summary.dependencies_removed,
         ));
     }
+    if summary.records_added + summary.records_removed + summary.records_changed > 0 {
+        parts.push(format!(
+            "{} changed, {} added, {} removed",
+            plural(summary.records_changed, "record"),
+            summary.records_added,
+            summary.records_removed,
+        ));
+    }
+    if summary.deletions_added + summary.deletions_removed > 0 {
+        parts.push(format!(
+            "{} added, {} removed",
+            plural(summary.deletions_added, "deletion"),
+            summary.deletions_removed,
+        ));
+    }
     parts.join("; ")
 }
 
@@ -464,7 +509,9 @@ struct JsonDiff<'a> {
     identical: bool,
     summary: Summary,
     changes: &'a [Change],
-    patch: PatchInfo,
+    /// The statistics of the generated patch. `None` for the difference of two `PTCH` files,
+    /// which generates no patch.
+    patch: Option<PatchInfo>,
 }
 
 /// Renders the `json` format.
@@ -475,13 +522,13 @@ fn json(diff: &BinDiff, hashes: &BinHashes, base: &Utf8Path, edited: &Utf8Path) 
         identical: diff.is_empty(),
         summary: diff.summary(),
         changes: &diff.changes,
-        patch: PatchInfo {
+        patch: diff.has_patch.then(|| PatchInfo {
             records: diff.report.records,
             objects: diff.report.objects.len(),
             deleted: diff.report.deleted.len(),
             exact: diff.patch_is_exact,
             lifted: diff.lifted(hashes),
-        },
+        }),
     };
     let mut out = serde_json::to_string_pretty(&document).into_diagnostic()?;
     out.push('\n');
@@ -754,6 +801,80 @@ mod tests {
         assert_eq!(document["base"], "game:data/skin0.bin");
         assert_eq!(document["changes"][0]["old"], "1");
         assert_eq!(document["changes"][0]["new"], "2");
+    }
+
+    #[test]
+    fn structural_formats_compare_two_ptch_inputs() {
+        use ltk_meta::{BinOverride, path::PropertyPath};
+
+        let (_guard, dir) = temp_dir();
+        let patch = |value: i32, deleted: u32| -> BinFile {
+            BinOverride::builder()
+                .delete(deleted)
+                .set(
+                    OBJECT,
+                    PropertyPath::new("Size").unwrap(),
+                    values::I32::new(value),
+                )
+                .build()
+                .into()
+        };
+        let (base, edited) = (dir.join("base.ptch"), dir.join("edited.ptch"));
+        std::fs::write(&base, to_bin(&patch(1, 0x7)).unwrap()).unwrap();
+        std::fs::write(&edited, to_bin(&patch(2, 0x8)).unwrap()).unwrap();
+        colored::control::set_override(false);
+
+        let output = dir.join("out.txt");
+        let differs = run(
+            &context(),
+            DiffArgs {
+                format: Some(DiffFormat::Summary),
+                output: Some(output.clone()),
+                ..args(&base, &edited)
+            },
+        )
+        .unwrap();
+        assert!(differs);
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "+ delete 0x00000008\n- delete 0x00000007\n~ 0x11110001 (patch records)\n  ~ Size: i32 = 1 -> 2\n\n0 objects changed, 0 added, 0 removed, 0 replaced; 0 values changed, 0 added, 0 removed; 1 record changed, 0 added, 0 removed; 1 deletion added, 1 removed\n"
+        );
+
+        // The JSON document has no patch statistics, because no patch is generated.
+        let output = dir.join("out.json");
+        run(
+            &context(),
+            DiffArgs {
+                output: Some(output.clone()),
+                ..args(&base, &edited)
+            },
+        )
+        .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+        assert_eq!(document["patch"], serde_json::Value::Null);
+        assert_eq!(document["summary"]["records_changed"], 1);
+        assert_eq!(document["changes"][2]["kind"], "record_changed");
+
+        for (format, patch) in [
+            (Some(DiffFormat::Rito), None),
+            (Some(DiffFormat::Summary), Some(dir.join("new.ptch"))),
+        ] {
+            let error = run(
+                &context(),
+                DiffArgs {
+                    format,
+                    patch,
+                    output: Some(dir.join("unused.txt")),
+                    ..args(&base, &edited)
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("Both inputs are PTCH files"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
