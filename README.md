@@ -627,7 +627,9 @@ The cache directory is selected in this order:
 
 The tool works without installed tables. It logs a warning and prints hashes as hex.
 
-To add your own names, put CDragon text tables in a directory and pass the directory with `-H, --hashtable <DIR>`. The file names are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`. Each file has one `<hex hash> <name>` per line. A name from these files takes precedence over the cache.
+The four bin tables resolve entry paths, class names, property names and the values of `hash` and `link` properties. The `game` table resolves the paths of `file` values and of game chunks. Printed text therefore has `texture: file = "assets/characters/teemo/skins/base/teemo_base_tx_cm.tex"` if the table has the path, and `texture: file = 0x56e8cbde20856ea` if it does not.
+
+To add your own names, put CDragon text tables in a directory and pass the directory with `-H, --hashtable <DIR>`. The file names are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`, and `hashes.game.txt` for the paths of `file` values. Each file has one `<hex hash> <name>` per line. A name from these files takes precedence over the cache.
 
 ## Development
 

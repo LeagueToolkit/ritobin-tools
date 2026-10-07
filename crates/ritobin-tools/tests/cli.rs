@@ -245,6 +245,60 @@ fn keep_hashed_prints_hashes_as_hex() {
 }
 
 #[test]
+fn convert_prints_file_value_as_path_from_game_table() {
+    let ws = Workspace::new();
+    let text = ws.write(
+        "skin0.rito",
+        &BASE.replace(
+            "Size: f32 = 1",
+            "Size: f32 = 1\n        Texture: file = \"ASSETS/Mods/Example.tex\"",
+        ),
+    );
+    ws.tool().arg("convert").arg(&text).assert().success();
+    let bin = ws.path("skin0.bin");
+
+    let print = |tables: Option<&Path>| {
+        let mut command = ws.tool();
+        command.arg("convert").arg(&bin).args(["--output", "-"]);
+        if let Some(tables) = tables {
+            command.arg("--hashtable").arg(tables);
+        }
+        stdout(&command.output().unwrap())
+    };
+
+    // Without the path in a table, the value is printed as its hash.
+    let hash = ltk_game_index::chunk_hash("assets/mods/example.tex").0;
+    assert!(print(None).contains(&format!(": file = 0x{hash:x}\n")));
+
+    let tables = ws.path("game-table");
+    fs::create_dir_all(&tables).unwrap();
+    fs::write(
+        tables.join("hashes.game.txt"),
+        format!("{hash:016x} assets/mods/example.tex\n"),
+    )
+    .unwrap();
+    let printed = print(Some(&tables));
+    assert!(
+        printed.contains(": file = \"assets/mods/example.tex\"\n"),
+        "{printed}"
+    );
+
+    // The printed path converts back to the same hash.
+    let back = ws.write("back.rito", &printed);
+    ws.tool()
+        .arg("convert")
+        .arg(&back)
+        .arg("--output")
+        .arg(ws.path("back.bin"))
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(&bin).unwrap(),
+        fs::read(ws.path("back.bin")).unwrap()
+    );
+}
+
+#[test]
 fn convert_fails_on_invalid_text_and_lenient_converts_it() {
     let ws = Workspace::new();
     let broken = ws.write(
