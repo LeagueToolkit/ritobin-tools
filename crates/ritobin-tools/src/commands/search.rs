@@ -31,7 +31,8 @@ use crate::{
     commands::gamedata::GameArgs,
     context::Context,
     document::scanned_format,
-    hashes::GameNames,
+    hashes::{GameNames, WadPaths},
+    package::{self, PackageKind, Visit},
     search::{self, Hit, Matched, Matcher, Pattern, Query, Row, Target},
     utils::plural,
 };
@@ -44,8 +45,9 @@ pub struct SearchArgs {
     #[arg(value_name = "PATTERN")]
     pub pattern: Option<String>,
 
-    /// Bin files, ritobin text files or directories to search. A directory is searched with its
-    /// subdirectories. Defaults to the bins of the game
+    /// Bin files, ritobin text files, WAD archives, mod packages (.fantome, .modpkg) or
+    /// directories to search. A directory is searched with its subdirectories. Defaults to the
+    /// bins of the game
     #[arg(value_name = "PATHS")]
     pub paths: Vec<Utf8PathBuf>,
 
@@ -217,7 +219,7 @@ enum Mode {
 
 /// One unit of work for a worker thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Job {
+pub enum Job {
     /// A bin file or a ritobin text file.
     File(Utf8PathBuf),
     /// The bin chunks of one game archive, as chunk hash and chunk path, in path order.
@@ -227,12 +229,129 @@ enum Job {
         path: Utf8PathBuf,
         bins: Vec<(WadHash, String)>,
     },
+    /// The bins of a WAD archive or of a mod package that is given as a path.
+    Package {
+        path: Utf8PathBuf,
+        kind: PackageKind,
+        /// The `--bin` filter. A bin is searched if its path contains this text.
+        filter: Option<String>,
+    },
+}
+
+/// One item that [`Job::read`] passes to its callback.
+pub enum Item<'a> {
+    /// One document of the job.
+    Document {
+        /// The file path, or the path of the bin in the game or in a package.
+        source: &'a str,
+        /// The package that contains the bin, with the WAD inside a mod package. `None` for a
+        /// file and for a game bin.
+        archive: Option<String>,
+        /// The data of the document, or the error of reading it.
+        data: Result<Vec<u8>>,
+    },
+    /// An archive or a package that cannot be opened. `documents` is the number of documents
+    /// that are counted as not read.
+    Unreadable { documents: usize },
+}
+
+impl Job {
+    /// Reads the documents of the job in order and passes each to `each`. Stops if `each`
+    /// returns `false` or if `stop` is set. `paths` resolves the chunk hashes of a WAD archive
+    /// that is given as a path.
+    ///
+    /// Logs a warning and passes [`Item::Unreadable`] if an archive or a package cannot be
+    /// opened.
+    pub fn read(
+        &self,
+        paths: &WadPaths,
+        stop: &AtomicBool,
+        each: &mut dyn FnMut(Item<'_>) -> bool,
+    ) {
+        match self {
+            Job::File(path) => {
+                each(Item::Document {
+                    source: path.as_str(),
+                    archive: None,
+                    data: std::fs::read(path).into_diagnostic(),
+                });
+            }
+            Job::Archive { name, path, bins } => {
+                let mounted = File::open(path)
+                    .into_diagnostic()
+                    .and_then(|file| Wad::mount(BufReader::new(file)).into_diagnostic());
+                let mut wad = match mounted {
+                    Ok(wad) => wad,
+                    Err(error) => {
+                        tracing::warn!("Skipped the archive {name}: {error}");
+                        each(Item::Unreadable {
+                            documents: bins.len(),
+                        });
+                        return;
+                    }
+                };
+                for (chunk, bin) in bins {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let data = match wad.chunks().get(*chunk).copied() {
+                        Some(entry) => wad
+                            .load_chunk_decompressed(&entry)
+                            .map(|data| data.into_vec())
+                            .into_diagnostic(),
+                        None => Err(miette::miette!(
+                            "{name} does not contain the chunk. The archive changed after it was indexed"
+                        )),
+                    };
+                    let item = Item::Document {
+                        source: bin,
+                        archive: None,
+                        data,
+                    };
+                    if !each(item) {
+                        break;
+                    }
+                }
+            }
+            Job::Package { path, kind, filter } => {
+                let mut visit = Visit {
+                    wants: &|name| passes(name, filter.as_deref()),
+                    bin: &mut |bin| {
+                        !stop.load(Ordering::Relaxed)
+                            && each(Item::Document {
+                                source: bin.name,
+                                archive: Some(match bin.part {
+                                    Some(part) => format!("{path}/{part}"),
+                                    None => path.to_string(),
+                                }),
+                                data: bin.data,
+                            })
+                    },
+                };
+                if let Err(error) = package::for_each_bin(path, *kind, paths, &mut visit) {
+                    tracing::warn!("Skipped {path}: {error}");
+                    each(Item::Unreadable { documents: 1 });
+                }
+            }
+        }
+    }
+
+    /// Returns the game archive of the job. Returns `None` for a file and for a package.
+    pub fn archive(&self) -> Option<&str> {
+        match self {
+            Job::Archive { name, .. } => Some(name),
+            Job::File(_) | Job::Package { .. } => None,
+        }
+    }
 }
 
 /// The hits of one document.
 struct Found {
-    /// The file path, or the chunk path of a game bin.
+    /// The file path, or the chunk path of a bin of the game or of a package.
     source: String,
+    /// The package that contains the bin, with the WAD inside a mod package. `None` for a
+    /// file and for a game bin, whose archive is the archive of its job.
+    archive: Option<String>,
     /// The number of hits.
     count: usize,
     /// The hits. Empty if the search only counts them.
@@ -314,12 +433,12 @@ pub fn run(ctx: &Context, args: SearchArgs) -> Result<bool> {
     // before the game index is loaded or built. The game directory is checked first, because
     // compiling reads the hashtables.
     if paths.is_empty() {
-        check_game_dir(ctx, &args)?;
+        check_game_dir(ctx, &args.game)?;
     }
     let names = ctx.game_names();
     let matcher = Matcher::compile(&query, &names.bins, &names.paths)?;
     let jobs = match paths.is_empty() {
-        true => game_jobs(ctx, &args)?,
+        true => game_jobs(ctx, &args.game, args.wad.as_deref(), args.bin.as_deref())?,
         false => file_jobs(&paths, args.bin.as_deref())?,
     };
 
@@ -361,8 +480,8 @@ pub fn run(ctx: &Context, args: SearchArgs) -> Result<bool> {
 }
 
 /// Fails if no game directory is set by `--game-dir` or by the config.
-fn check_game_dir(ctx: &Context, args: &SearchArgs) -> Result<()> {
-    if args.game.dir(ctx).is_none() {
+pub fn check_game_dir(ctx: &Context, game: &GameArgs) -> Result<()> {
+    if game.dir(ctx).is_none() {
         miette::bail!(
             "No paths were given and no game directory is set. Pass files or directories to search, pass --game-dir, or run `ritobin-tools config set game_dir <DIR>`"
         );
@@ -375,21 +494,26 @@ fn passes(text: &str, filter: Option<&str>) -> bool {
     filter.is_none_or(|filter| text.to_lowercase().contains(&filter.to_lowercase()))
 }
 
-/// Builds one job per game archive that has bin chunks. Applies the `--wad` filter to the
-/// archive names and the `--bin` filter to the chunk paths.
-fn game_jobs(ctx: &Context, args: &SearchArgs) -> Result<Vec<Job>> {
-    let game = args.game.open(ctx)?;
+/// Builds one job per game archive that has bin chunks. `wad` is a filter for the archive
+/// names and `bin` is a filter for the chunk paths.
+pub fn game_jobs(
+    ctx: &Context,
+    game: &GameArgs,
+    wad: Option<&str>,
+    bin: Option<&str>,
+) -> Result<Vec<Job>> {
+    let game = game.open(ctx)?;
 
     let mut jobs = Vec::new();
     for archive in game.bin_archives() {
-        if !passes(&archive.name, args.wad.as_deref()) {
+        if !passes(&archive.name, wad) {
             continue;
         }
         let mut bins: Vec<(WadHash, String)> = archive
             .chunks
             .iter()
             .map(|chunk| (*chunk, game.chunk_name(*chunk)))
-            .filter(|(_, name)| passes(name, args.bin.as_deref()))
+            .filter(|(_, name)| passes(name, bin))
             .collect();
         if bins.is_empty() {
             continue;
@@ -403,7 +527,7 @@ fn game_jobs(ctx: &Context, args: &SearchArgs) -> Result<Vec<Job>> {
     }
 
     // Without the `game` table a chunk is named by its hash, so a path filter selects no bin.
-    if jobs.is_empty() && args.bin.is_some() && !ctx.wad_paths().is_loaded() {
+    if jobs.is_empty() && bin.is_some() && !ctx.wad_paths().is_loaded() {
         tracing::warn!(
             "--bin selected no bin, because the `game` hashtable is not installed and the bin paths are unknown. Run `ritobin-tools hashes sync` to download the hashtables."
         );
@@ -414,8 +538,15 @@ fn game_jobs(ctx: &Context, args: &SearchArgs) -> Result<Vec<Job>> {
 /// Builds one job per file. A directory is replaced by the bin files and ritobin text files in
 /// it and in its subdirectories, sorted by path. `filter` is the `--bin` filter.
 ///
+/// A WAD archive or a mod package is one job for all of its bins.
+///
 /// Fails if a path does not exist.
-fn file_jobs(paths: &[Utf8PathBuf], filter: Option<&str>) -> Result<Vec<Job>> {
+pub fn file_jobs(paths: &[Utf8PathBuf], filter: Option<&str>) -> Result<Vec<Job>> {
+    let package = |path: &Utf8Path, kind| Job::Package {
+        path: path.to_owned(),
+        kind,
+        filter: filter.map(str::to_owned),
+    };
     let mut jobs = Vec::new();
     for path in paths {
         if path.is_dir() {
@@ -430,19 +561,26 @@ fn file_jobs(paths: &[Utf8PathBuf], filter: Option<&str>) -> Result<Vec<Job>> {
                     tracing::warn!("Skipping non-UTF-8 path: {}", entry.path().display());
                     continue;
                 };
-                if scanned_format(file).is_some() {
+                if let Some(kind) = PackageKind::of(file) {
+                    jobs.push(package(file, kind));
+                } else if scanned_format(file).is_some() {
                     jobs.push(Job::File(file.to_owned()));
                 }
             }
         } else if path.exists() {
-            jobs.push(Job::File(path.clone()));
+            jobs.push(match PackageKind::of(path) {
+                Some(kind) => package(path, kind),
+                None => Job::File(path.clone()),
+            });
         } else {
             miette::bail!("Input does not exist: {path}");
         }
     }
+    // The filter is applied to the path of a file, and to the paths of the bins inside a
+    // package.
     jobs.retain(|job| match job {
         Job::File(path) => passes(&path.as_str().replace('\\', "/"), filter),
-        Job::Archive { .. } => true,
+        Job::Archive { .. } | Job::Package { .. } => true,
     });
     Ok(jobs)
 }
@@ -471,6 +609,7 @@ fn search(
     let mut failure = None;
     let scanner = Scanner {
         matcher,
+        paths: &names.paths,
         limit,
         // The `Paths` and `Counts` modes print no hit, so the workers only count the hits.
         count_only: matches!(mode, Mode::Paths | Mode::Counts),
@@ -481,10 +620,7 @@ fn search(
         let Some(found) = scanned.found else {
             return true;
         };
-        let archive = match &jobs[index] {
-            Job::Archive { name, .. } => Some(name.as_str()),
-            Job::File(_) => None,
-        };
+        let archive = jobs[index].archive().or(found.archive.as_deref());
         match printer.document(&found, archive) {
             Ok(proceed) => proceed,
             Err(error) => {
@@ -583,6 +719,8 @@ fn run_jobs(
 #[derive(Clone, Copy)]
 struct Scanner<'a> {
     matcher: &'a Matcher,
+    /// Resolves the chunk hashes of a WAD archive that is given as a path.
+    paths: &'a WadPaths,
     /// The maximum number of hits of one document.
     limit: usize,
     /// If `true`, the hits are counted and not collected.
@@ -606,6 +744,7 @@ impl Scanner<'_> {
                 failed: 0,
                 found: (count > 0).then(|| Found {
                     source: source.to_owned(),
+                    archive: None,
                     count,
                     hits,
                 }),
@@ -630,45 +769,24 @@ impl Scanner<'_> {
             gate.enter(hits, stop) && results.send(scanned).is_ok()
         };
 
-        match job {
-            Job::File(path) => {
-                send(self.scan(path.as_str(), std::fs::read(path).into_diagnostic()));
-            }
-            Job::Archive { name, path, bins } => {
-                let mounted = File::open(path)
-                    .into_diagnostic()
-                    .and_then(|file| Wad::mount(BufReader::new(file)).into_diagnostic());
-                let mut wad = match mounted {
-                    Ok(wad) => wad,
-                    Err(error) => {
-                        tracing::warn!("Skipped the archive {name}: {error}");
-                        send(Scanned {
-                            searched: bins.len(),
-                            failed: bins.len(),
-                            found: None,
-                        });
-                        return;
-                    }
-                };
-                for (chunk, bin) in bins {
-                    if stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let data = match wad.chunks().get(*chunk).copied() {
-                        Some(entry) => wad
-                            .load_chunk_decompressed(&entry)
-                            .map(|data| data.into_vec())
-                            .into_diagnostic(),
-                        None => Err(miette::miette!(
-                            "{name} does not contain the chunk. The archive changed after it was indexed"
-                        )),
-                    };
-                    if !send(self.scan(bin, data)) {
-                        break;
-                    }
+        job.read(self.paths, stop, &mut |item| match item {
+            Item::Document {
+                source,
+                archive,
+                data,
+            } => {
+                let mut scanned = self.scan(source, data);
+                if let Some(found) = &mut scanned.found {
+                    found.archive = archive;
                 }
+                send(scanned)
             }
-        }
+            Item::Unreadable { documents } => send(Scanned {
+                searched: documents,
+                failed: documents,
+                found: None,
+            }),
+        });
     }
 }
 
@@ -727,12 +845,15 @@ impl<W: Write> Printer<'_, W> {
                     )?,
                     None => writeln!(self.out, "{}", source.magenta().bold())?,
                 }
-                let mut object = None;
+                // The hits of an object and the hits of the records that address the same
+                // object have separate headings.
+                let mut group = None;
                 for hit in hits {
                     let row = Row::new(hit, self.names);
-                    if row.object.is_some() && row.object != object {
+                    let key = Some((row.object.clone(), row.record.is_some()));
+                    if row.object.is_some() && key != group {
                         writeln!(self.out, "{}", heading(&row))?;
-                        object.clone_from(&row.object);
+                        group = key;
                     }
                     if let Some(line) = line(&row) {
                         writeln!(self.out, "{line}")?;
@@ -793,14 +914,19 @@ fn heading(row: &Row) -> String {
         .as_deref()
         .or(row.object.as_deref())
         .unwrap_or_default();
+    let class = match row.record {
+        Some(_) => "patch records",
+        None => row.class.as_deref().unwrap_or_default(),
+    };
     format!(
         "  {} : {}",
-        highlight(name, on_object(Matched::Entry), |text| text.green()),
         highlight(
-            row.class.as_deref().unwrap_or_default(),
-            on_object(Matched::Class),
-            |text| text.cyan()
-        )
+            name,
+            on_object(Matched::Entry)
+                || (row.record.is_some() && row.matched.contains(&Matched::Entry)),
+            |text| text.green()
+        ),
+        highlight(class, on_object(Matched::Class), |text| text.cyan())
     )
 }
 
@@ -812,7 +938,10 @@ fn line(row: &Row) -> Option<String> {
     let value = row.value.as_deref().map(|value| {
         highlight(
             value,
-            matched(Matched::Value) || matched(Matched::Class) || matched(Matched::Dependency),
+            matched(Matched::Value)
+                || matched(Matched::Class)
+                || matched(Matched::Dependency)
+                || matched(Matched::Deleted),
             |text| text.normal(),
         )
     });
@@ -826,6 +955,7 @@ fn line(row: &Row) -> Option<String> {
                 |text| text.normal()
             )
         ),
+        None if matched(Matched::Deleted) => format!("  deleted: {value_type}"),
         None if row.object.is_none() => format!("  linked: {value_type}"),
         None => return None,
     };
@@ -967,7 +1097,9 @@ mod tests {
         let names = |jobs: Vec<Job>| -> Vec<String> {
             jobs.into_iter()
                 .map(|job| match job {
-                    Job::File(path) => path.strip_prefix(&dir).unwrap().as_str().replace('\\', "/"),
+                    Job::File(path) | Job::Package { path, .. } => {
+                        path.strip_prefix(&dir).unwrap().as_str().replace('\\', "/")
+                    }
                     Job::Archive { name, .. } => name,
                 })
                 .collect()
@@ -1015,6 +1147,60 @@ mod tests {
                 failed: 0,
             }
         );
+    }
+
+    #[test]
+    fn search_reads_bins_of_wad_archive_and_fantome_file_in_directory() {
+        use crate::package::testing;
+
+        let (_guard, dir) = temp_dir();
+        std::fs::write(
+            dir.join("Items.wad.client"),
+            testing::wad(&[
+                ("data/sword.bin", &bin("Items/Sword", "Long Sword", 3)),
+                ("data/icon.dds", b"DDS"),
+            ]),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("mod.fantome"),
+            testing::zip(&[
+                ("META/info.json", b"{}"),
+                (
+                    "WAD/Items.wad.client/data/bow.bin",
+                    &bin("Items/Bow", "Long Bow", 3),
+                ),
+            ]),
+        )
+        .unwrap();
+        let sword = format!("0x{:08x}", BinHash::hash_str("Items/Sword").0);
+        let bow = format!("0x{:08x}", BinHash::hash_str("Items/Bow").0);
+        let item = format!("0x{:08x}", BinHash::hash_str("Item").0);
+        let name = format!("{:08x}", BinHash::hash_str("name").0);
+        // No hashtable is loaded, so the bin of the WAD archive is named by its chunk hash.
+        let chunk = format!("{:016x}", WadHash::hash_str("data/sword.bin").0);
+
+        let (out, totals) = run_in(&dir, &["long"], 2);
+        assert_eq!(
+            out,
+            format!(
+                "{chunk} [Items.wad.client]\n  {sword} : {item}\n    {name}: string = \"Long Sword\"\n\ndata/bow.bin [mod.fantome/WAD/Items.wad.client]\n  {bow} : {item}\n    {name}: string = \"Long Bow\"\n"
+            )
+        );
+        assert_eq!(
+            totals,
+            Totals {
+                matches: 2,
+                sources: 2,
+                searched: 2,
+                failed: 0,
+            }
+        );
+
+        // The `--bin` filter selects the bins inside a package by their path.
+        let (out, totals) = run_in(&dir, &["long", "--bin", "BOW.bin", "-l"], 1);
+        assert_eq!(out, "data/bow.bin\n");
+        assert_eq!(totals.searched, 1);
     }
 
     #[test]
@@ -1191,10 +1377,14 @@ mod tests {
             args(&line)
         };
 
+        let jobs_of = |args: &SearchArgs| {
+            game_jobs(&ctx, &args.game, args.wad.as_deref(), args.bin.as_deref())
+        };
+
         // No hashtable is loaded, so a chunk is named by its hash.
         let sword = format!("{:016x}", WadHash::hash_str("data/sword.bin").0);
         let bow = format!("{:016x}", WadHash::hash_str("data/bow.bin").0);
-        let jobs = game_jobs(&ctx, &with(&["long"])).unwrap();
+        let jobs = jobs_of(&with(&["long"])).unwrap();
         let listed: Vec<(&str, Vec<&str>)> = jobs
             .iter()
             .map(|job| match job {
@@ -1202,7 +1392,7 @@ mod tests {
                     name.as_str(),
                     bins.iter().map(|(_, bin)| bin.as_str()).collect(),
                 ),
-                Job::File(path) => (path.as_str(), Vec::new()),
+                Job::File(path) | Job::Package { path, .. } => (path.as_str(), Vec::new()),
             })
             .collect();
         assert_eq!(
@@ -1214,19 +1404,12 @@ mod tests {
         );
 
         assert_eq!(
-            game_jobs(&ctx, &with(&["long", "--wad", "map11"]))
-                .unwrap()
-                .len(),
+            jobs_of(&with(&["long", "--wad", "map11"])).unwrap().len(),
             1
         );
-        assert_eq!(
-            game_jobs(&ctx, &with(&["long", "--bin", &bow]))
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(jobs_of(&with(&["long", "--bin", &bow])).unwrap().len(), 1);
         assert!(
-            game_jobs(&ctx, &with(&["long", "--wad", "none"]))
+            jobs_of(&with(&["long", "--wad", "none"]))
                 .unwrap()
                 .is_empty()
         );
@@ -1261,8 +1444,8 @@ mod tests {
     #[test]
     fn check_game_dir_fails_without_game_directory() {
         let ctx = Context::for_tests(None);
-        let error = check_game_dir(&ctx, &args(&["long"])).unwrap_err();
+        let error = check_game_dir(&ctx, &args(&["long"]).game).unwrap_err();
         assert!(error.to_string().contains("no game directory is set"));
-        assert!(check_game_dir(&ctx, &args(&["long", "--game-dir", "League"])).is_ok());
+        assert!(check_game_dir(&ctx, &args(&["long", "--game-dir", "League"]).game).is_ok());
     }
 }

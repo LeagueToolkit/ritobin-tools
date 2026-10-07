@@ -33,6 +33,8 @@ pub struct BinHashes {
     hashes: Option<HashDb>,
     types: Option<HashDb>,
     extra: Option<Arc<HashMapProvider>>,
+    /// The paths of `file` values.
+    files: WadPaths,
 }
 
 impl BinHashes {
@@ -65,6 +67,7 @@ impl BinHashes {
             hashes.fields = open(Table::BinFields);
             hashes.hashes = open(Table::BinHashes);
             hashes.types = open(Table::BinTypes);
+            hashes.files = WadPaths::load(Some(store));
 
             if missing_cache {
                 tracing::warn!(
@@ -186,6 +189,13 @@ impl HashProvider for BinHashes {
     fn lookup_type(&self, hash: BinHash) -> Option<Cow<'_, str>> {
         self.lookup(Table::BinTypes, hash)
     }
+
+    /// Returns the path of a `file` value. The text tables are checked first, then the Mimir
+    /// `game` table.
+    fn lookup_wad(&self, hash: WadHash) -> Option<Cow<'_, str>> {
+        let extra = self.extra.as_ref().and_then(|extra| extra.lookup_wad(hash));
+        extra.or_else(|| self.files.path(hash).map(Cow::Owned))
+    }
 }
 
 /// The field table has one name per field hash. The class is not used.
@@ -301,6 +311,26 @@ pub fn format_hash(hash: BinHash) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_wad_reads_game_text_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(dir.path()).unwrap();
+        let hash = ltk_game_index::chunk_hash("assets/mods/example.tex");
+        std::fs::write(
+            dir.join("hashes.game.txt"),
+            format!("{:016x} assets/mods/example.tex\n", hash.0),
+        )
+        .unwrap();
+
+        let hashes = BinHashes::load(None, Some(dir));
+        assert_eq!(
+            hashes.lookup_wad(hash).as_deref(),
+            Some("assets/mods/example.tex")
+        );
+        assert_eq!(hashes.lookup_wad(WadHash(1)), None);
+        assert_eq!(BinHashes::none().lookup_wad(hash), None);
+    }
 
     #[test]
     fn parse_hash_accepts_hex_with_or_without_prefix() {

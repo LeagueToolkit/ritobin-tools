@@ -8,20 +8,21 @@ use ltk_meta::{
     path::{PatchError, ResolveErrorKind},
 };
 use ltk_mimir_cache::Table;
-use miette::{IntoDiagnostic, Result, WrapErr};
+use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 
 use crate::{
     cli::LayoutArgs,
     commands::{
         gamedata::GameArgs,
-        input::{Inputs, game_bin},
+        input::Inputs,
         output::{OutputFormat, columns},
+        write::{self, Destination, Request},
     },
     context::Context,
-    document::{Format, ReadOptions, STDIO, encode, reads_back, write_bytes},
+    document::{Format, ReadOptions, STDIO, write_bytes},
     hashes::{BinHashes, format_hash},
-    utils::{hyperlink_path, plural, same_file_key},
+    utils::plural,
 };
 
 #[derive(Args, Debug)]
@@ -74,15 +75,6 @@ pub struct PatchArgs {
 
     #[command(flatten)]
     pub layout: LayoutArgs,
-}
-
-/// The output of a run that writes the patched bin.
-#[derive(Debug, PartialEq, Eq)]
-struct Destination {
-    path: Utf8PathBuf,
-    /// The output format from `--to` or from the file extension of `path`. `None` selects the
-    /// format of the base bin.
-    format: Option<Format>,
 }
 
 /// One applied `PTCH` file.
@@ -158,9 +150,7 @@ pub fn run(ctx: &Context, args: PatchArgs) -> Result<()> {
             })
             .collect(),
     };
-    let to_stdout = destination
-        .as_ref()
-        .is_some_and(|destination| destination.path.as_str() == STDIO);
+    let to_stdout = destination.as_ref().is_some_and(Destination::is_stdout);
     print(&report, args.format, to_stdout)?;
 
     if skipped > 0 && !args.partial {
@@ -181,98 +171,30 @@ pub fn run(ctx: &Context, args: PatchArgs) -> Result<()> {
     }
 
     let format = destination.format.unwrap_or(base.format);
-    let file = BinFile::Prop(bin);
-    let data = encode(
-        &file,
+    write::write_bin(
+        &destination.path,
         format,
+        bin,
         args.layout.over(ctx.config.print_config),
         match format {
             Format::Rito => hashes(),
             Format::Bin => &no_hashes,
         },
+        "patched bin",
     )
-    .wrap_err("Failed to encode the patched bin")?;
-    if format == Format::Rito
-        && !std::str::from_utf8(&data).is_ok_and(|text| reads_back(&file, text))
-    {
-        tracing::warn!(
-            "The text printed for the patched bin does not parse back to the same bin, because the printer does not print every value exactly. Write the patched bin as a .bin file instead."
-        );
-    }
-
-    write_bytes(&destination.path, &data)?;
-    if !to_stdout {
-        tracing::info!(
-            "Wrote the patched bin to {}",
-            hyperlink_path(&destination.path)
-        );
-    }
-    Ok(())
 }
 
 /// Returns the output path and the requested output format of `args`. Returns `None` for
-/// `--dry-run`.
-///
-/// Fails if more than one input is standard input, if no output option is set, if `--in-place`
-/// is set while the base bin is standard input or a bin of the game, or if `--output` is the
-/// path of an input.
+/// `--dry-run`. See [`write::destination`] for the failures.
 fn destination(args: &PatchArgs) -> Result<Option<Destination>> {
-    let from_stdin = std::iter::once(&args.base)
-        .chain(&args.patches)
-        .filter(|input| input.as_str() == STDIO)
-        .count();
-    if from_stdin > 1 {
-        miette::bail!(
-            "Standard input can be read only once, but `-` was passed for {from_stdin} inputs. Pass a file path for the other inputs"
-        );
-    }
-
-    if args.dry_run {
-        return Ok(None);
-    }
-    if args.in_place {
-        if args.base.as_str() == STDIO {
-            miette::bail!(
-                "--in-place requires a file path for BASE, but BASE is standard input. Pass --output instead"
-            );
-        }
-        if game_bin(&args.base).is_some() {
-            miette::bail!(
-                "--in-place requires a file path for BASE, but BASE is a bin of the game. Pass --output instead"
-            );
-        }
-        return Ok(Some(Destination {
-            path: args.base.clone(),
-            format: None,
-        }));
-    }
-    let Some(output) = &args.output else {
-        miette::bail!(
-            "No output was given. Pass --output <FILE>, --in-place to overwrite BASE, or --dry-run to print the report only"
-        );
-    };
-
-    if output.as_str() != STDIO {
-        let key = same_file_key(output);
-        let is_output =
-            |input: &Utf8PathBuf| input.as_str() != STDIO && same_file_key(input) == key;
-        if is_output(&args.base) {
-            miette::bail!(
-                "The output path {output} is BASE itself. Pass --in-place to overwrite BASE"
-            );
-        }
-        if let Some(patch) = args.patches.iter().find(|patch| is_output(patch)) {
-            miette::bail!(
-                "The output path {output} is the PTCH file {patch}. Pass a different path to --output"
-            );
-        }
-    }
-    Ok(Some(Destination {
-        path: output.clone(),
-        format: args
-            .to
-            .or_else(|| output.extension().and_then(Format::from_extension)),
-    }))
+    write::destination(&Request {
+        base: &args.base,
+        others: &args.patches,
+        output: args.output.as_ref(),
+        in_place: args.in_place,
+        dry_run: args.dry_run,
+        to: args.to,
+    })
 }
 
 /// A record that was not applied.
@@ -439,7 +361,7 @@ mod tests {
     use ltk_meta::{Bin, BinObject, BinOverride, path::PropertyPath, property::values};
 
     use super::*;
-    use crate::document::{Document, to_bin};
+    use crate::document::{Document, encode, to_bin};
 
     const OBJECT: u32 = 0x1111_0001;
     const OTHER: u32 = 0x1111_0002;
@@ -786,7 +708,7 @@ mod tests {
         let error = destination(&with_output("./base.bin")).unwrap_err();
         assert!(error.to_string().contains("Pass --in-place"));
         let error = destination(&with_output("size.ptch")).unwrap_err();
-        assert!(error.to_string().contains("is the PTCH file size.ptch"));
+        assert!(error.to_string().contains("is the input file size.ptch"));
         let error = destination(&args(base, &[patch])).unwrap_err();
         assert!(error.to_string().contains("No output was given"));
 

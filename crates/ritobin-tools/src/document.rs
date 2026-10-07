@@ -358,6 +358,19 @@ pub fn to_text(
     });
     let mut text = String::new();
     CstPrinter::new(&source, &mut text, config).print(&cst)?;
+
+    // The tree that is built from a bin prints with two layout defects: a trailing comma in a
+    // list on one line, and a closing brace of a list of structs that is indented one level too
+    // deep. The tree that is parsed from that text prints without them, and it is the tree that
+    // `format_text` prints. The second pass therefore gives `convert` and `format` the same
+    // layout.
+    let parsed = Cst::parse(&text);
+    if parsed.errors.is_empty() {
+        let mut normalized = String::new();
+        CstPrinter::new(&text, &mut normalized, config).print(&parsed)?;
+        text = normalized;
+    }
+
     if !text.ends_with('\n') {
         text.push('\n');
     }
@@ -500,6 +513,54 @@ fn parse_text(name: &str, text: String, options: ReadOptions) -> Result<BinFile>
         Some("pass --lenient to skip the invalid parts and convert the rest".to_owned()),
     )
     .into())
+}
+
+/// Formats ritobin text: prints the syntax tree of `text` with `layout`. Comments are kept, and
+/// names and values are printed as they are written in `text`. `name` is the file name shown in
+/// diagnostics.
+///
+/// Fails if the text has a syntax error or a build diagnostic other than a shadowed entry. Fails
+/// if the formatted text does not parse to the same document as `text`.
+pub fn format_text(name: &str, text: &str, layout: TextLayout) -> Result<String> {
+    let cst = Cst::parse(text);
+    let (file, diagnostics) = cst.build(text);
+    let errors: Vec<TextProblem> = cst
+        .errors
+        .iter()
+        .map(|error| TextProblem::new(error, error.span))
+        .chain(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    !matches!(diagnostic.diagnostic, Diagnostic::ShadowedEntry { .. })
+                })
+                .map(|diagnostic| TextProblem::new(diagnostic.diagnostic, diagnostic.span)),
+        )
+        .collect();
+    if !errors.is_empty() {
+        return Err(problems(name, text, errors, None).into());
+    }
+
+    let config = PrintConfig::from(TextLayout {
+        indent_size: PRINTER_INDENT,
+        line_width: layout.line_width.clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH),
+        ..layout
+    });
+    let mut formatted = String::new();
+    CstPrinter::new(text, &mut formatted, config)
+        .print(&cst)
+        .into_diagnostic()?;
+    if !formatted.ends_with('\n') {
+        formatted.push('\n');
+    }
+    let formatted = reindent(formatted, layout.indent_size);
+
+    if !reads_back(&file, &formatted) {
+        miette::bail!(
+            "The formatted text of {name} does not parse to the same document as the input. The file is not changed. Report this as a defect of the formatter"
+        );
+    }
+    Ok(formatted)
 }
 
 /// Builds the diagnostic for the problems `all` of the file `name`. Shows at most

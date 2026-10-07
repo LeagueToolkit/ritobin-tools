@@ -18,7 +18,9 @@ mod game;
 mod gamedata;
 mod hashes;
 mod logging;
+mod package;
 mod search;
+mod unknown;
 mod utils;
 
 /// The exit code of a failed command.
@@ -66,6 +68,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.command {
         Commands::Convert(args) => commands::convert::run(&ctx, args)?,
+        Commands::Format(args) => {
+            if !commands::format::run(&ctx, args)? {
+                return Ok(ExitCode::from(EXIT_FAILURE));
+            }
+        }
         Commands::Diff(args) => {
             let exit_code = args.exit_code;
             let differs = commands::diff::run(&ctx, args)?;
@@ -74,6 +81,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Commands::Patch(args) => commands::patch::run(&ctx, args)?,
+        Commands::Merge(args) => commands::merge::run(&ctx, args)?,
         Commands::Search(args) => {
             if !commands::search::run(&ctx, args)? {
                 return Ok(ExitCode::from(EXIT_NO_MATCH));
@@ -87,6 +95,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             if !commands::gamedata::run(&ctx, command)? {
                 return Ok(ExitCode::from(EXIT_FAILURE));
             }
+        }
+        Commands::Completions { shell } => {
+            // The generator panics if a write fails. The script is generated in memory, so
+            // that a closed output pipe fails the command with an error instead.
+            let mut script = Vec::new();
+            cli::write_completions(shell, &mut script);
+            document::write_bytes(document::STDIO.into(), &script)?;
         }
         #[cfg(windows)]
         Commands::Shell { command } => commands::shell::run(command)?,

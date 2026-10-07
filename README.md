@@ -7,13 +7,16 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 ## Features
 
 - **Convert** `.bin` to `.rito` and back, for both `PROP` bins and `PTCH` patch bins
+- **Format** ritobin text files in place, with comments kept
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text, and apply `PTCH` files to a bin
+- **Merge** partial bins into a base bin
 - **Search** bin files or every bin of the installed game for names, values and references
 - **Game bins**: extract bins of the installed game to files, and compare or patch a game bin with `game:<BIN>`
-- **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
+- **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export, and list the hashes of bins that have no name
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
+- **Shell completions** for bash, zsh, fish, PowerShell and elvish
 - **Windows Explorer** context menu, and drag-and-drop of files onto the executable
 - Works on Windows, Linux and macOS
 
@@ -125,6 +128,41 @@ Text printed from a bin is verified: the tool parses the text again and compares
 
 A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.rito` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
 
+### format
+
+Formats ritobin text files. The command prints the syntax tree of the text with the layout settings, so comments are kept and names are not changed. `convert` loses the comments of a text file, because it decodes the text to a bin first. The command alias is `fmt`.
+
+```bash
+ritobin-tools format <PATHS>... [OPTIONS]
+```
+
+```bash
+# Rewrite a file in place
+ritobin-tools format skin0.rito
+
+# Format every text file in a directory tree
+ritobin-tools format ./data -r
+
+# Exit with 1 if a file is not formatted. Writes no file
+ritobin-tools format ./data -r --check
+
+# Write the formatted text to another file, or to standard output
+ritobin-tools format skin0.rito -o formatted.rito
+ritobin-tools format - < skin0.rito
+```
+
+Flags:
+
+- `<PATHS>...`: ritobin text files or directories. `-` reads standard input and writes standard output
+- `-o, --output <FILE>`: write the formatted text to a file and keep the input unchanged. Requires exactly one input file
+- `-r, --recursive`: include the subdirectories of a directory
+- `--check`: write no file. Print the path of each file that is not formatted, and exit with 1 if there is one
+- `--indent-size <N>`, `--line-width <N>`, `--inline-structs[=BOOL]`: text layout for this run. The defaults come from `[print_config]` in the config file
+
+A file is rewritten only if its text changes. Text that `convert` prints is already formatted.
+
+The command fails for a file that has a syntax error or a type error, and shows the error with its source line. It checks that the formatted text parses to the same document as the input, and it does not write the file if that check fails. A run with several files formats the valid files, reports the invalid files, and exits with 1.
+
 ### diff
 
 Shows the difference between two bins. Each input can be a `.bin` file, a ritobin text file, or a bin of the installed game written as `game:<BIN>`, see [Game bins as inputs](#game-bins-as-inputs).
@@ -160,7 +198,7 @@ Every format except `unified` and `rito` lists changes. A change has these field
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `changed`, `added`, `removed`, `object_added`, `object_removed`, `object_replaced`, `dependency_added` or `dependency_removed` |
+| `kind` | `changed`, `added`, `removed`, `object_added`, `object_removed`, `object_replaced`, `dependency_added` or `dependency_removed`. For two `PTCH` files also `record_added`, `record_removed`, `record_changed`, `deletion_added` and `deletion_removed` |
 | `object` | Path hash of the object, as `0x` hex |
 | `object_name` | Path of the object, if the hashtables have it |
 | `class` | Class of the object, as a name or `0x` hex |
@@ -203,7 +241,22 @@ A patch contains a list of records, a list of whole objects and a delete list. E
 
 The tool logs a warning if a limitation affects the patch. The `json` format lists each affected location under `patch.lifted`. `patch.exact` is `true` if applying the patch to `BASE` produces exactly `EDITED`.
 
-The other formats and `--patch` require two `PROP` bins. If either input is a `PTCH` file, use the `unified` format.
+#### Comparing two PTCH files
+
+Every format except `rito` also compares two `PTCH` files. The changes are:
+
+- `deletion_added` and `deletion_removed`: an object that only one delete list has.
+- The object changes of two bins, for the whole objects of the two files.
+- `record_added`, `record_removed` and `record_changed`: a record is identified by its object and its property path. `path` is the property path of the record, `old` and `new` are its values, and `class` is empty, because a record does not store the class of its object.
+
+```
++ delete "Characters/Test/Skins/Skin9"
+~ "Characters/Test/Skins/Skin0" (patch records)
+  ~ skinMeshProperties.selfIllumination: f32 = 0.25 -> 0.5
+  + skinScale: f32 = 1.1
+```
+
+The `json` format has `patch: null` for two `PTCH` files, because no patch is generated. `--patch` and the `rito` format require two `PROP` bins. To compare a `PROP` bin with a `PTCH` file, use the `unified` format, or apply the `PTCH` file with [patch](#patch) first.
 
 ### patch
 
@@ -280,9 +333,65 @@ The report is printed to standard output. With `-o -`, standard output contains 
 
 The patched bin is encoded from the parsed `BASE`, so the comments of a text `BASE` are lost.
 
+### merge
+
+Merges one or more bins into a base bin and writes the merged bin. A value of an edit bin replaces the value of the base bin, and a value that only the base bin has is kept. Each input can be a `.bin` file, a ritobin text file or `game:<BIN>`.
+
+```bash
+ritobin-tools merge <BASE> <EDITS>... [OPTIONS]
+```
+
+```bash
+# Merge an edit into a bin and write the result to a new file
+ritobin-tools merge skin0.bin edit.rito -o merged.bin
+
+# Merge several edits in order. A later edit replaces the values of an earlier edit
+ritobin-tools merge skin0.bin first.bin second.bin --in-place
+
+# Merge an edit into the current game bin
+ritobin-tools merge game:data/characters/teemo/skins/skin0.bin edit.rito -o ./out/skin0.bin
+
+# Print the report only
+ritobin-tools merge skin0.bin edit.rito --dry-run
+```
+
+The output flags are those of [patch](#patch): one of `-o, --output <FILE>`, `--in-place` and `-n, --dry-run` is required, and `-t, --to`, `-f, --format`, `-k`, `--lenient` and the text layout flags are accepted.
+
+An edit bin can be a partial bin that has only the objects and the properties to change. The merge follows these rules:
+
+- An object that only the edit has is added.
+- An object of both bins with the same class is merged property by property. A property that only the edit has is added.
+- An object of both bins with different classes is replaced by the object of the edit.
+- A struct of both bins with the same class is merged property by property, at any depth.
+- A map of both bins is merged entry by entry. An entry with a new key is added.
+- Any other value, including a list, is replaced by the value of the edit.
+- A dependency that only the edit has is added to the dependency list.
+
+A merge cannot remove an object, a property, a map entry or a list item.
+
+The command prints a report with one row per edit bin:
+
+```
+EDIT       ADDED  MERGED  REPLACED  VALUES  INSERTED  KEYS  LINKS  MISMATCHED
+edit.rito  1      1       0         2       1         0     1      0
+```
+
+| Column | Meaning |
+| --- | --- |
+| `ADDED` | Number of objects that were added |
+| `MERGED` | Number of objects that were merged property by property |
+| `REPLACED` | Number of objects that were replaced, because the classes differ |
+| `VALUES` | Number of values that the edit replaced in merged objects |
+| `INSERTED` | Number of properties that the edit added to merged objects |
+| `KEYS` | Number of map entries that the edit added |
+| `LINKS` | Number of dependencies that were added |
+| `MISMATCHED` | Number of replaced values whose type differs from the type of the base value |
+
+A mismatched value is replaced like any other value. The report lists each of them in a second table and the command logs a warning, because the game ignores a value whose type differs from the type of its property. The `json` report has the same data, with the object lists as path hashes.
+
 ### search
 
-Searches bins for names, values and references. Without a path, the command searches every bin of the installed game. With paths, it searches those bin files, ritobin text files and directories. The command alias is `grep`.
+Searches bins for names, values and references. Without a path, the command searches every bin of the installed game. With paths, it searches those bin files, ritobin text files, WAD archives, mod packages and directories. The command alias is `grep`.
 
 ```bash
 # Find an entry and every reference to it in the game
@@ -305,6 +414,9 @@ ritobin-tools search -e '\.skn$' --type string --wad Champions/Teemo
 
 # Search files and directories, and print JSON Lines
 ritobin-tools search mushroom ./data skin0.rito -f jsonl
+
+# Search the bins inside a mod package or a WAD archive
+ritobin-tools search Characters/Teemo/Skins/Skin0 -x my-mod.fantome Teemo.wad.client
 ```
 
 The output of the `text` format is grouped by bin and by object:
@@ -319,7 +431,7 @@ A search tests five parts of a bin. `--in` selects them:
 
 | Part | Tested |
 | --- | --- |
-| `entries` | The path of each object |
+| `entries` | The path of each object. In a `PTCH` file also the object of each record and each item of the delete list |
 | `classes` | The class of each object and of each nested struct |
 | `fields` | The name of each property |
 | `values` | Each value without nested values, each list item, and each map key and map value |
@@ -362,20 +474,37 @@ Fields of the `json` and `jsonl` formats:
 | --- | --- |
 | `source` | Path of the file, or path of the bin in the game |
 | `archive` | Game archive that contains the bin. Missing for a file |
-| `matched` | The parts that matched: `entry`, `class`, `field`, `key`, `value` or `dependency` |
+| `matched` | The parts that matched: `entry`, `class`, `field`, `key`, `value`, `dependency` or `deleted` |
 | `object`, `object_name`, `class` | The object that contains the match, as for [diff](#diff) |
 | `path` | Path of the value inside the object. `null` for a match on the object itself or on a dependency |
 | `type` | Ritobin type of the value |
 | `value` | The value as ritobin text. For a struct, its class |
 | `count` | Item count of a list, an option or a map |
+| `record` | Position of the record of a `PTCH` file that contains the match, counting from 0. `null` for any other match |
+
+A `PTCH` file is searched in three parts: its delete list, its whole objects and its records.
+
+- A match in a record has `record` set. `class` is `null`, because a record does not store the class of its object. `path` is the property path of the record, followed by the path inside the value of the record. The text format prints these matches under the heading `<object> : patch records`.
+- A record matches `entries` if the object that it addresses matches, and `fields` if the last property name of its path matches.
+- A match in the delete list has `matched: ["deleted"]` and the deleted object in `value`. The text format prints it as `deleted: hash = "<object>"`.
+- `--object-class` excludes the records and the delete list, because they store no class.
 
 The exit code is 0 if at least one match was found, 1 if nothing matched, and 2 if the command failed.
 
 A game search reads the list of bins from the object index, see [gamedata](#gamedata). It then reads every bin and takes a few seconds. `--wad` and `--bin` reduce the bins that are read. A bin that cannot be read is skipped with a warning.
 
+#### Searching archives and mod packages
+
+A path can be a WAD archive (`.wad.client`, `.wad.mobile`, `.wad`), a Fantome mod (`.fantome`) or a LeagueToolkit mod package (`.modpkg`). The command searches every bin inside it. A directory scan also searches the archives and the packages in the directory.
+
+- The `source` of a match is the path of the bin inside the package. The `archive` is the package file. For a mod package, the WAD inside the package follows, for example `my-mod.fantome/WAD/Teemo.wad.client`. A `.modpkg` layer other than `base` follows the WAD in parentheses.
+- A chunk is a bin if its path ends with `.bin`. The paths of a WAD archive come from the `game` hashtable. A chunk without a known path is read, and it is searched if its data starts with a bin magic. Such a bin is named by its chunk hash.
+- `--bin <TEXT>` selects the bins inside a package by their path.
+- A Fantome mod is read in all its forms: a packed WAD, a directory with the name of a WAD, the `RAW` directory, and the `WAD_<layer>` directories of layers.
+
 Limitations:
 
-- The records of a `PTCH` bin are not searched, only its objects.
+- A packed WAD inside a Fantome mod is read into memory completely.
 - A game bin that declares no object is not searched.
 - A file path is matched by text only if the `game` hashtable is installed. It is always matched by its hash.
 
@@ -407,9 +536,13 @@ ritobin-tools hashes search rollover --table fields
 
 # Export a table in the CDragon text format
 ritobin-tools hashes export types -o hashes.bintypes.txt
+
+# List the hashes of the game, or of files, that no table resolves
+ritobin-tools hashes unknown -n 50
+ritobin-tools hashes unknown ./mod my-mod.fantome --table fields,types
 ```
 
-`check`, `status`, `lookup`, `hash` and `search` accept `-f, --format <table|json>`.
+`check`, `status`, `lookup`, `hash`, `search` and `unknown` accept `-f, --format <table|json>`.
 
 A bin uses four tables. `--table` accepts their short names:
 
@@ -419,6 +552,28 @@ A bin uses four tables. `--table` accepts their short names:
 | `fields` | Property names |
 | `hashes` | Values of `hash` and `link` properties |
 | `types` | Class names |
+
+#### Hashes without a name
+
+`hashes unknown` reads bins and lists every hash that no hashtable resolves. Without a path it reads every bin of the installed game. With paths it reads those bin files, ritobin text files, WAD archives, mod packages and directories, like [search](#search).
+
+```
+TABLE    HASH        COUNT   BINS   EXAMPLE
+types    0x0a0eddc9  19188   1177   data/characters/aatrox/aatrox.bin: Characters/Aatrox/Spells/AatroxBasicAttack mSpell.Cooldown
+fields   0x0a3e0478  18676   1177   data/characters/aatrox/aatrox.bin: Characters/Aatrox/Spells/AatroxBasicAttack mSpell.Cooldown.0a3e0478
+```
+
+- `-t, --table <TABLES>`: list only the hashes of these tables, separated by commas: `entries`, `fields`, `hashes`, `types` and `game`
+- `-n, --limit <N>`: print at most N hashes. The most frequent hashes are printed first
+- `--wad <TEXT>`, `--bin <TEXT>`: read only the game archives or the bins whose name contains the text
+- `--game-dir <DIR>`, `--index-dir <DIR>`: as for [gamedata](#gamedata)
+- `-j, --threads <N>`: number of worker threads
+
+`COUNT` is the number of occurrences and `BINS` is the number of bins that contain the hash. `EXAMPLE` is one occurrence: the bin, the object and the path of the value. The `json` format has these as the fields `source`, `archive`, `object`, `object_name` and `path`.
+
+The tables of the list differ from the hashtables in two points. The value of a `link` property is listed under `entries`, and it has a name if the `entries` table or the `hashes` table has one. `game` lists the values of `file` properties, as 16 hex digits.
+
+The property names in the records of a `PTCH` file are stored as text, so the command reads only the objects of a `PTCH` file. A name that is written in a ritobin text file is listed if no hashtable has it.
 
 ### gamedata
 
@@ -571,6 +726,34 @@ ritobin-tools config set hashtable_dir "D:/hashes"
 ritobin-tools config reset
 ```
 
+### completions
+
+Prints a completion script for a shell. The script completes the commands, the flags and the values of flags that have a fixed set of values.
+
+```bash
+ritobin-tools completions <bash|elvish|fish|powershell|zsh>
+```
+
+Install the script for your shell:
+
+```bash
+# bash
+ritobin-tools completions bash > ~/.local/share/bash-completion/completions/ritobin-tools
+
+# zsh. The directory must be in $fpath
+ritobin-tools completions zsh > ~/.zfunc/_ritobin-tools
+
+# fish
+ritobin-tools completions fish > ~/.config/fish/completions/ritobin-tools.fish
+```
+
+```powershell
+# PowerShell. Add this line to the file that $PROFILE names
+ritobin-tools completions powershell | Out-String | Invoke-Expression
+```
+
+Generate the script again after you update the tool, so that it has the commands and the flags of the new version.
+
 ### shell
 
 Windows only. Adds a `ritobin-tools` submenu to the Explorer context menu:
@@ -627,7 +810,9 @@ The cache directory is selected in this order:
 
 The tool works without installed tables. It logs a warning and prints hashes as hex.
 
-To add your own names, put CDragon text tables in a directory and pass the directory with `-H, --hashtable <DIR>`. The file names are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`. Each file has one `<hex hash> <name>` per line. A name from these files takes precedence over the cache.
+The four bin tables resolve entry paths, class names, property names and the values of `hash` and `link` properties. The `game` table resolves the paths of `file` values and of game chunks. Printed text therefore has `texture: file = "assets/characters/teemo/skins/base/teemo_base_tx_cm.tex"` if the table has the path, and `texture: file = 0x56e8cbde20856ea` if it does not.
+
+To add your own names, put CDragon text tables in a directory and pass the directory with `-H, --hashtable <DIR>`. The file names are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`, and `hashes.game.txt` for the paths of `file` values. Each file has one `<hex hash> <name>` per line. A name from these files takes precedence over the cache.
 
 ## Development
 

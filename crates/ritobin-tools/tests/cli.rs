@@ -245,6 +245,119 @@ fn keep_hashed_prints_hashes_as_hex() {
 }
 
 #[test]
+fn convert_prints_file_value_as_path_from_game_table() {
+    let ws = Workspace::new();
+    let text = ws.write(
+        "skin0.rito",
+        &BASE.replace(
+            "Size: f32 = 1",
+            "Size: f32 = 1\n        Texture: file = \"ASSETS/Mods/Example.tex\"",
+        ),
+    );
+    ws.tool().arg("convert").arg(&text).assert().success();
+    let bin = ws.path("skin0.bin");
+
+    let print = |tables: Option<&Path>| {
+        let mut command = ws.tool();
+        command.arg("convert").arg(&bin).args(["--output", "-"]);
+        if let Some(tables) = tables {
+            command.arg("--hashtable").arg(tables);
+        }
+        stdout(&command.output().unwrap())
+    };
+
+    // Without the path in a table, the value is printed as its hash.
+    let hash = ltk_game_index::chunk_hash("assets/mods/example.tex").0;
+    assert!(print(None).contains(&format!(": file = 0x{hash:x}\n")));
+
+    let tables = ws.path("game-table");
+    fs::create_dir_all(&tables).unwrap();
+    fs::write(
+        tables.join("hashes.game.txt"),
+        format!("{hash:016x} assets/mods/example.tex\n"),
+    )
+    .unwrap();
+    let printed = print(Some(&tables));
+    assert!(
+        printed.contains(": file = \"assets/mods/example.tex\"\n"),
+        "{printed}"
+    );
+
+    // The printed path converts back to the same hash.
+    let back = ws.write("back.rito", &printed);
+    ws.tool()
+        .arg("convert")
+        .arg(&back)
+        .arg("--output")
+        .arg(ws.path("back.bin"))
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(&bin).unwrap(),
+        fs::read(ws.path("back.bin")).unwrap()
+    );
+}
+
+#[test]
+fn format_keeps_comments_and_check_exits_1_for_unformatted_file() {
+    let ws = Workspace::new();
+    let messy = BASE
+        .replace(
+            "        Size: f32 = 1",
+            "   Size: f32 = 1   # scale of the model",
+        )
+        .replace("{ \"a\", \"b\" }", "{ \"a\"\n  \"b\" }");
+    let text = ws.write("skin0.rito", &messy);
+
+    let output = ws
+        .tool()
+        .arg("format")
+        .arg(&text)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output).trim(), text.to_str().unwrap());
+    assert_eq!(read(&text), messy);
+
+    ws.tool().arg("fmt").arg(&text).assert().success();
+    assert_eq!(
+        read(&text),
+        BASE.replace("Size: f32 = 1", "Size: f32 = 1 # scale of the model")
+    );
+    ws.tool()
+        .arg("format")
+        .arg(&text)
+        .arg("--check")
+        .assert()
+        .success()
+        .stdout("");
+
+    // Text printed by `convert` is already formatted.
+    ws.tool()
+        .arg("convert")
+        .arg(&text)
+        .arg("--output")
+        .arg(ws.path("skin0.bin"))
+        .assert()
+        .success();
+    let printed = ws.path("printed.rito");
+    ws.tool()
+        .arg("convert")
+        .arg(ws.path("skin0.bin"))
+        .arg("--output")
+        .arg(&printed)
+        .assert()
+        .success();
+    ws.tool()
+        .arg("format")
+        .arg(&printed)
+        .arg("--check")
+        .assert()
+        .success();
+}
+
+#[test]
 fn convert_fails_on_invalid_text_and_lenient_converts_it() {
     let ws = Workspace::new();
     let broken = ws.write(
@@ -452,6 +565,76 @@ fn patch_applies_saved_patch_and_exits_1_if_record_is_skipped() {
 }
 
 #[test]
+fn merge_writes_base_with_values_of_partial_edit() {
+    let ws = Workspace::new();
+    let tables = ws.field_table();
+    let base = ws.write("base.rito", BASE);
+    // The edit has one property of the object, and one dependency.
+    let edit = ws.write(
+        "edit.rito",
+        &BASE
+            .replace("\"shared.bin\"", "\"extra.bin\"")
+            .replace("        Size: f32 = 1\n", "")
+            .replace("        Tags: list[string] = { \"a\", \"b\" }\n", "")
+            .replace("\"base\"", "\"edited\""),
+    );
+
+    let merged = ws.path("merged.rito");
+    let output = ws
+        .tool()
+        .arg("merge")
+        .arg(&base)
+        .arg(&edit)
+        .arg("--output")
+        .arg(&merged)
+        .args(["--format", "json", "--hashtable"])
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["written"], true);
+    assert_eq!(report["edits"][0]["objects_merged"], 1);
+    assert_eq!(report["edits"][0]["values_replaced"], 1);
+    assert_eq!(
+        report["edits"][0]["dependencies_added"],
+        serde_json::json!(["extra.bin"])
+    );
+
+    let printed = read(&merged);
+    assert!(printed.contains("Size: f32 = 1"), "{printed}");
+    assert!(printed.contains("Name: string = \"edited\""), "{printed}");
+    assert!(
+        printed.contains("{ \"shared.bin\", \"extra.bin\" }"),
+        "{printed}"
+    );
+    assert_eq!(read(&base), BASE);
+
+    let output = ws
+        .tool()
+        .arg("merge")
+        .arg(&base)
+        .arg(&edit)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("No output was given"));
+}
+
+#[test]
+fn completions_prints_script_for_shell() {
+    let ws = Workspace::new();
+    let output = ws.tool().args(["completions", "bash"]).output().unwrap();
+    assert!(output.status.success());
+    let script = stdout(&output);
+    assert!(script.contains("ritobin-tools"), "{script}");
+    assert!(script.contains("--game-dir"), "{script}");
+
+    let output = ws.tool().args(["completions", "cmd"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn hashes_hash_prints_bin_hash() {
     let ws = Workspace::new();
     let output = ws
@@ -464,6 +647,59 @@ fn hashes_hash_prints_bin_hash() {
     let rows: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(rows[0]["hash"], format!("0x{:08x}", fnv1a("mName")));
     assert_eq!(rows[0]["known_in"], serde_json::json!([]));
+}
+
+#[test]
+fn hashes_unknown_lists_hashes_that_no_table_resolves() {
+    let ws = Workspace::new();
+    let text = ws.write("skin0.rito", BASE);
+    let tables = ws.field_table();
+
+    // The field names are in the text table. The entry path and the class are not.
+    let output = ws
+        .tool()
+        .args(["hashes", "unknown"])
+        .arg(&text)
+        .args(["--format", "json", "--hashtable"])
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let listed: Vec<(&str, &str)> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["table"].as_str().unwrap(),
+                row["hash"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let entry = format!("0x{:08x}", fnv1a("Characters/Test/Skins/Skin0"));
+    let class = format!("0x{:08x}", fnv1a("SkinCharacterDataProperties"));
+    assert_eq!(
+        listed,
+        [("entries", entry.as_str()), ("types", class.as_str())]
+    );
+    assert_eq!(rows[0]["count"], 1);
+    assert_eq!(rows[0]["bins"], 1);
+    assert!(stderr(&output).contains("Found 2 hashes without a name (1 entries, 1 types)"));
+
+    // Without the table the three field names are listed as well.
+    let output = ws
+        .tool()
+        .args(["hashes", "unknown"])
+        .arg(&text)
+        .args(["--table", "fields"])
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&output).lines().count(), 4, "{}", stdout(&output));
+
+    let no_game = ws.tool().args(["hashes", "unknown"]).output().unwrap();
+    assert_eq!(no_game.status.code(), Some(1));
+    assert!(stderr_line(&no_game).contains("no game directory is set"));
 }
 
 #[test]

@@ -16,8 +16,10 @@ use crate::{
         config::ConfigCommand,
         convert::ConvertArgs,
         diff::DiffArgs,
+        format::FormatArgs,
         gamedata::GameDataCommand,
         hashes::{HashesCommand, SyncArgs},
+        merge::MergeArgs,
         patch::PatchArgs,
         search::SearchArgs,
     },
@@ -83,11 +85,18 @@ pub enum Commands {
     /// Convert between .bin (binary) and .rito (text)
     Convert(ConvertArgs),
 
+    /// Format ritobin text files. Comments are kept
+    #[command(visible_alias = "fmt")]
+    Format(FormatArgs),
+
     /// Show the difference between two bins, and optionally save it as a PTCH patch
     Diff(DiffArgs),
 
     /// Apply PTCH patches to a bin
     Patch(PatchArgs),
+
+    /// Merge bins into a base bin. A value of a later bin replaces the value of an earlier bin
+    Merge(MergeArgs),
 
     /// Search bin files or the bins of the game for names, values and references
     #[command(visible_alias = "grep")]
@@ -118,6 +127,13 @@ pub enum Commands {
     GameData {
         #[command(subcommand)]
         command: GameDataCommand,
+    },
+
+    /// Print a shell completion script
+    Completions {
+        /// The shell that the script is for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 
     /// Manage the Windows Explorer context menu
@@ -223,6 +239,13 @@ fn styles() -> Styles {
         .placeholder(AnsiColor::Blue.on_default())
 }
 
+/// Writes the completion script of `shell` for the `ritobin-tools` command to `out`.
+pub fn write_completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
+    let mut command = Cli::command();
+    let name = command.get_name().to_owned();
+    clap_complete::generate(shell, &mut command, name, out);
+}
+
 /// Parses `args` as a command line. The first item is the program name.
 pub fn try_parse(args: impl IntoIterator<Item = OsString>) -> Result<Cli, clap::Error> {
     let matches = Cli::command()
@@ -285,6 +308,19 @@ mod tests {
     }
 
     #[test]
+    fn write_completions_lists_subcommands_for_every_shell() {
+        use clap::ValueEnum as _;
+
+        for shell in clap_complete::Shell::value_variants() {
+            let mut script = Vec::new();
+            write_completions(*shell, &mut script);
+            let script = String::from_utf8(script).unwrap();
+            assert!(script.contains("ritobin-tools"), "{shell}");
+            assert!(script.contains("gamedata"), "{shell}");
+        }
+    }
+
+    #[test]
     fn layout_flags_override_only_set_fields() {
         let args = LayoutArgs {
             indent_size: Some(2),
@@ -340,8 +376,11 @@ mod tests {
     fn dropped_files_ignores_subcommand_names() {
         for name in [
             "convert",
+            "format",
+            "fmt",
             "diff",
             "patch",
+            "merge",
             "search",
             "grep",
             "hashes",
@@ -351,6 +390,7 @@ mod tests {
             "config",
             "gamedata",
             "gd",
+            "completions",
         ] {
             assert!(is_subcommand(OsStr::new(name)), "{name}");
         }

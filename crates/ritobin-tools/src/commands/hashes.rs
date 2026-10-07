@@ -12,7 +12,10 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use serde::Serialize;
 
 use crate::{
-    commands::output::{OutputArgs, OutputFormat, columns, print},
+    commands::{
+        output::{OutputArgs, OutputFormat, columns, print},
+        unknown::{self, UnknownArgs},
+    },
     context::Context,
     document::{STDIO, write_bytes},
     hashes::{BIN_TABLES, MIMIR_TABLES_REPO, format_hash, parse_hash},
@@ -42,6 +45,9 @@ pub enum HashesCommand {
 
     /// Print the hashtable cache directory
     Dir,
+
+    /// List the hashes of bins that no hashtable resolves. Reads files, or the bins of the game
+    Unknown(UnknownArgs),
 
     /// Resolve bin hashes to their names
     Lookup {
@@ -171,6 +177,7 @@ pub fn run(ctx: &Context, command: HashesCommand) -> Result<()> {
         HashesCommand::Check { remote, output } => check(ctx, &remote, output.format),
         HashesCommand::Status { output } => status(ctx, output.format),
         HashesCommand::Dir => dir(ctx),
+        HashesCommand::Unknown(args) => unknown::run(ctx, &args),
         HashesCommand::Lookup {
             hashes,
             table,
