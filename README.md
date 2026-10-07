@@ -7,6 +7,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 ## Features
 
 - **Convert** `.bin` to `.rito` and back, for both `PROP` bins and `PTCH` patch bins
+- **Format** ritobin text files in place, with comments kept
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text, and apply `PTCH` files to a bin
 - **Search** bin files or every bin of the installed game for names, values and references
@@ -124,6 +125,41 @@ Text is validated before it is converted. A syntax error or a type error fails t
 Text printed from a bin is verified: the tool parses the text again and compares the result with the bin. It logs a warning if they differ. The text printer does not print a few values exactly, for example a string with a leading or trailing space. `--no-verify` skips the verification.
 
 A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.rito` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
+
+### format
+
+Formats ritobin text files. The command prints the syntax tree of the text with the layout settings, so comments are kept and names are not changed. `convert` loses the comments of a text file, because it decodes the text to a bin first. The command alias is `fmt`.
+
+```bash
+ritobin-tools format <PATHS>... [OPTIONS]
+```
+
+```bash
+# Rewrite a file in place
+ritobin-tools format skin0.rito
+
+# Format every text file in a directory tree
+ritobin-tools format ./data -r
+
+# Exit with 1 if a file is not formatted. Writes no file
+ritobin-tools format ./data -r --check
+
+# Write the formatted text to another file, or to standard output
+ritobin-tools format skin0.rito -o formatted.rito
+ritobin-tools format - < skin0.rito
+```
+
+Flags:
+
+- `<PATHS>...`: ritobin text files or directories. `-` reads standard input and writes standard output
+- `-o, --output <FILE>`: write the formatted text to a file and keep the input unchanged. Requires exactly one input file
+- `-r, --recursive`: include the subdirectories of a directory
+- `--check`: write no file. Print the path of each file that is not formatted, and exit with 1 if there is one
+- `--indent-size <N>`, `--line-width <N>`, `--inline-structs[=BOOL]`: text layout for this run. The defaults come from `[print_config]` in the config file
+
+A file is rewritten only if its text changes. Text that `convert` prints is already formatted.
+
+The command fails for a file that has a syntax error or a type error, and shows the error with its source line. It checks that the formatted text parses to the same document as the input, and it does not write the file if that check fails. A run with several files formats the valid files, reports the invalid files, and exits with 1.
 
 ### diff
 

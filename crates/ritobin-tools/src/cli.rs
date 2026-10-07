@@ -16,6 +16,7 @@ use crate::{
         config::ConfigCommand,
         convert::ConvertArgs,
         diff::DiffArgs,
+        format::FormatArgs,
         gamedata::GameDataCommand,
         hashes::{HashesCommand, SyncArgs},
         patch::PatchArgs,
@@ -82,6 +83,10 @@ pub struct Cli {
 pub enum Commands {
     /// Convert between .bin (binary) and .rito (text)
     Convert(ConvertArgs),
+
+    /// Format ritobin text files. Comments are kept
+    #[command(visible_alias = "fmt")]
+    Format(FormatArgs),
 
     /// Show the difference between two bins, and optionally save it as a PTCH patch
     Diff(DiffArgs),
@@ -340,6 +345,8 @@ mod tests {
     fn dropped_files_ignores_subcommand_names() {
         for name in [
             "convert",
+            "format",
+            "fmt",
             "diff",
             "patch",
             "search",

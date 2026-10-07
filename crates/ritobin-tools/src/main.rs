@@ -66,6 +66,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.command {
         Commands::Convert(args) => commands::convert::run(&ctx, args)?,
+        Commands::Format(args) => {
+            if !commands::format::run(&ctx, args)? {
+                return Ok(ExitCode::from(EXIT_FAILURE));
+            }
+        }
         Commands::Diff(args) => {
             let exit_code = args.exit_code;
             let differs = commands::diff::run(&ctx, args)?;

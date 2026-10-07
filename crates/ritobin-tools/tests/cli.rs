@@ -299,6 +299,65 @@ fn convert_prints_file_value_as_path_from_game_table() {
 }
 
 #[test]
+fn format_keeps_comments_and_check_exits_1_for_unformatted_file() {
+    let ws = Workspace::new();
+    let messy = BASE
+        .replace(
+            "        Size: f32 = 1",
+            "   Size: f32 = 1   # scale of the model",
+        )
+        .replace("{ \"a\", \"b\" }", "{ \"a\"\n  \"b\" }");
+    let text = ws.write("skin0.rito", &messy);
+
+    let output = ws
+        .tool()
+        .arg("format")
+        .arg(&text)
+        .arg("--check")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output).trim(), text.to_str().unwrap());
+    assert_eq!(read(&text), messy);
+
+    ws.tool().arg("fmt").arg(&text).assert().success();
+    assert_eq!(
+        read(&text),
+        BASE.replace("Size: f32 = 1", "Size: f32 = 1 # scale of the model")
+    );
+    ws.tool()
+        .arg("format")
+        .arg(&text)
+        .arg("--check")
+        .assert()
+        .success()
+        .stdout("");
+
+    // Text printed by `convert` is already formatted.
+    ws.tool()
+        .arg("convert")
+        .arg(&text)
+        .arg("--output")
+        .arg(ws.path("skin0.bin"))
+        .assert()
+        .success();
+    let printed = ws.path("printed.rito");
+    ws.tool()
+        .arg("convert")
+        .arg(ws.path("skin0.bin"))
+        .arg("--output")
+        .arg(&printed)
+        .assert()
+        .success();
+    ws.tool()
+        .arg("format")
+        .arg(&printed)
+        .arg("--check")
+        .assert()
+        .success();
+}
+
+#[test]
 fn convert_fails_on_invalid_text_and_lenient_converts_it() {
     let ws = Workspace::new();
     let broken = ws.write(

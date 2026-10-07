@@ -1,6 +1,7 @@
 pub mod config;
 pub mod convert;
 pub mod diff;
+pub mod format;
 pub mod gamedata;
 pub mod hashes;
 pub mod input;
