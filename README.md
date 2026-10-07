@@ -10,6 +10,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text, and apply `PTCH` files to a bin
 - **Search** bin files or every bin of the installed game for names, values and references
+- **Game bins**: extract bins of the installed game to files, and compare or patch a game bin with `game:<BIN>`
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
@@ -126,7 +127,7 @@ A run never overwrites one of its inputs. The command fails before it writes any
 
 ### diff
 
-Shows the difference between two bins. Each input can be a `.bin` file or a ritobin text file.
+Shows the difference between two bins. Each input can be a `.bin` file, a ritobin text file, or a bin of the installed game written as `game:<BIN>`, see [Game bins as inputs](#game-bins-as-inputs).
 
 ```bash
 ritobin-tools diff <BASE> <EDITED> [OPTIONS]
@@ -206,7 +207,7 @@ The other formats and `--patch` require two `PROP` bins. If either input is a `P
 
 ### patch
 
-Applies one or more `PTCH` files to a bin and writes the patched bin. `BASE` and each `PTCH` file can be a `.bin` file or a ritobin text file. [diff](#saving-a-diff-as-a-patch) writes a `PTCH` file.
+Applies one or more `PTCH` files to a bin and writes the patched bin. `BASE` and each `PTCH` file can be a `.bin` file or a ritobin text file. `BASE` can also be a bin of the installed game written as `game:<BIN>`, see [Game bins as inputs](#game-bins-as-inputs). [diff](#saving-a-diff-as-a-patch) writes a `PTCH` file.
 
 ```bash
 ritobin-tools patch <BASE> <PATCHES>... [OPTIONS]
@@ -421,7 +422,7 @@ A bin uses four tables. `--table` accepts their short names:
 
 ### gamedata
 
-Validates, applies and renders [game-data declarations](https://wiki.leaguetoolkit.dev/reference/mod-packages/game-data/). A manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`) lists edits to the game's bins. It is the format LeagueToolkit mods use. The command alias is `gd`.
+Reads the bins of the installed game: validates, applies and renders [game-data declarations](https://wiki.leaguetoolkit.dev/reference/mod-packages/game-data/), and [extracts bins](#extracting-game-bins). A manifest (`game_data.yaml`, `.yml`, `.toml` or `.json`) lists edits to the game's bins. It is the format LeagueToolkit mods use. The command alias is `gd`.
 
 ```yaml
 version: 1
@@ -454,6 +455,9 @@ ritobin-tools gamedata render Characters/Teemo/Skins/Skin0:skinMeshProperties.te
 
 # Print an entry from a file
 ritobin-tools gamedata render Characters/Teemo/Skins/Skin0 --bin skin0.bin
+
+# Write a game bin to a file
+ritobin-tools gamedata extract data/characters/teemo/skins/skin0.bin -o skin0.rito
 ```
 
 Common flags:
@@ -484,6 +488,76 @@ Limitations:
 
 - No class schema is loaded. The type of a property is taken from its existing value in the bin. An edit that adds a property missing from the bin is skipped as `untypable`. An object constructed from a class is skipped as `unknownClass`. Cloning an object is supported.
 - Only one manifest is applied, and only to the game's copy of each bin. Layering several mods and reading a bin from mod content are not supported.
+
+#### Extracting game bins
+
+`gamedata extract` writes bins of the game to files. The game is not modified.
+
+```bash
+# One bin to a file. The file extension selects the format
+ritobin-tools gamedata extract data/characters/teemo/skins/skin0.bin -o skin0.bin
+ritobin-tools gamedata extract data/characters/teemo/skins/skin0.bin -o skin0.rito
+
+# The bin that declares an entry
+ritobin-tools gamedata extract Characters/Teemo/Skins/Skin0 -o skin0.rito
+
+# Every bin whose path contains a text, at its game path under ./out
+ritobin-tools gamedata extract --bin characters/teemo/skins/ -d ./out
+
+# Every bin of one archive, as text
+ritobin-tools gamedata extract --wad Champions/Teemo. -d ./teemo --to rito
+```
+
+A `BINS` argument has one of these forms:
+
+| Form | Selects |
+| --- | --- |
+| A path that ends with `.bin`, for example `data/characters/teemo/skins/skin0.bin` | The bin with that path |
+| 16 hex digits | The bin with that chunk hash |
+| An entry path, or `0x` and 8 hex digits | Every bin that declares the entry |
+
+Flags:
+
+- `--wad <TEXT>`: also select the bins of the archives whose name contains the text
+- `--bin <TEXT>`: also select the bins whose path contains the text. With `--wad`, a bin must pass both filters
+- `-o, --output <FILE>`: write one bin to a file. `-` writes standard output. The command fails if more than one bin is selected
+- `-d, --output-dir <DIR>`: write each bin at its game path under a directory
+- `-t, --to <bin|rito>`: output format. Defaults to the format of the `-o` file extension, or to `bin`
+- `--skip-existing`: do not overwrite an existing output file
+- `--ext`, `-k`, `--no-verify` and the text layout flags of `convert`
+
+The command requires `--output` or `--output-dir`. A binary output file has exactly the bytes that the game stores.
+
+`--wad`, `--bin` and an entry use the object index, so they do not select a bin that declares no object. `--bin` requires the `game` hashtable, because a bin without a known path is named by its chunk hash.
+
+Under `--output-dir`, two kinds of bin are not written at their game path:
+
+- A bin without a known path is written as `<chunk hash>.bin` in the output directory.
+- A bin whose file name is longer than 240 bytes is written as `<chunk hash>.bin` in the directory of its game path, because file systems limit a file name to 255 bytes. The game has such bins, for example the bins that contain the shared objects of many skins of one champion. The command logs the number of these bins, and `-L debug` lists them.
+
+Text output uses the text extension in place of `.bin` in both cases.
+
+With `--output-dir`, a bin that cannot be read or printed does not stop the run. The command then exits with 1 after the last bin.
+
+#### Game bins as inputs
+
+`diff` and `patch` accept `game:<BIN>` in place of a file path. The bin is read from the game. `<BIN>` has the forms of a `BINS` argument of `gamedata extract`, and it must select exactly one bin.
+
+```bash
+# Show what an edited bin changes, compared with the game
+ritobin-tools diff game:data/characters/teemo/skins/skin0.bin ./mod/skin0.bin -f summary
+
+# Save those changes as a patch
+ritobin-tools diff game:Characters/Teemo/Skins/Skin0 ./mod/skin0.bin --patch edited.ptch
+
+# Check whether the patch applies to the current game bin, for example after a game update
+ritobin-tools patch game:data/characters/teemo/skins/skin0.bin edited.ptch --dry-run
+
+# Apply the patch to the current game bin
+ritobin-tools patch game:data/characters/teemo/skins/skin0.bin edited.ptch -o ./out/skin0.bin
+```
+
+Both commands accept `--game-dir` and `--index-dir`.
 
 ### config
 
@@ -524,7 +598,7 @@ Settings are read from `ritobin-tools.toml` in the directory of the executable, 
 # Hashtable cache directory. Omit it to use the shared cache.
 hashtable_dir = "D:/hashes"
 
-# Game directory used by the search and gamedata commands.
+# Game directory used by the commands that read the game.
 game_dir = "C:/Riot Games/League of Legends"
 
 # Layout of printed ritobin text.

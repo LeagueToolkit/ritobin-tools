@@ -12,6 +12,7 @@ use std::{
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
+use ltk_game_data::EntryName;
 use ltk_game_index::{ArchiveId, BuildOptions, GameIndex, ObjectIndex, chunk_hash};
 use ltk_hash::{BinHash, WadHash};
 use ltk_meta::{BinFile, BinObject};
@@ -34,6 +35,53 @@ pub struct ArchiveBins {
     /// The absolute path of the archive file.
     pub path: Utf8PathBuf,
     pub chunks: Vec<WadHash>,
+}
+
+/// A selection of game bins, parsed from a command line argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinRef {
+    /// The bin chunk with the hash `chunk`.
+    Chunk {
+        chunk: WadHash,
+        /// The chunk path as written, with `/` separators, or the chunk hash as written.
+        name: String,
+    },
+    /// Every bin that declares the object with the path hash `object`.
+    Entry {
+        object: BinHash,
+        /// The entry path or the entry hash, as written.
+        name: String,
+    },
+}
+
+impl BinRef {
+    /// Parses `text` as a selection of game bins.
+    ///
+    /// A text that ends with `.bin` is a chunk path. A text of 16 hex digits is a chunk hash.
+    /// Any other text is an entry: an object path, or an object path hash written as `0x` and
+    /// 8 hex digits. Fails if `text` is empty.
+    pub fn parse(text: &str) -> Result<Self> {
+        let is_chunk_hash = text.len() == 16 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if is_chunk_hash && let Ok(hash) = u64::from_str_radix(text, 16) {
+            return Ok(Self::Chunk {
+                chunk: WadHash(hash),
+                name: text.to_owned(),
+            });
+        }
+        if text.to_ascii_lowercase().ends_with(".bin") {
+            let name = text.replace('\\', "/");
+            return Ok(Self::Chunk {
+                chunk: chunk_hash(&name),
+                name,
+            });
+        }
+        let entry = EntryName::try_from(text)
+            .map_err(|error| miette::miette!("Invalid game bin `{text}`: {error}"))?;
+        Ok(Self::Entry {
+            object: entry.object_hash(),
+            name: text.to_owned(),
+        })
+    }
 }
 
 pub struct Game {
@@ -236,6 +284,20 @@ impl Game {
         chunks
     }
 
+    /// Returns the chunks that `bins` selects. Returns an empty list if no archive contains the
+    /// chunk, or if no chunk declares the entry.
+    ///
+    /// A chunk selection uses the chunk index only. An entry selection loads the object index.
+    pub fn select(&self, bins: &BinRef) -> Vec<WadHash> {
+        match bins {
+            BinRef::Chunk { chunk, .. } => match self.index.contains(*chunk) {
+                true => vec![*chunk],
+                false => Vec::new(),
+            },
+            BinRef::Entry { object, .. } => self.declaring_chunks(*object),
+        }
+    }
+
     /// Reads `object` from the first chunk that declares it, in object index order. Returns
     /// `None` if no chunk declares the object.
     pub fn object(&self, object: BinHash) -> Result<Option<BinObject>> {
@@ -430,6 +492,63 @@ mod tests {
             Some(&values::I32::new(20).into())
         );
         assert_eq!(game.object(BinHash(3)).unwrap(), None);
+    }
+
+    #[test]
+    fn bin_ref_parse_classifies_chunk_path_chunk_hash_and_entry() {
+        assert_eq!(
+            BinRef::parse("DATA\\Characters\\Teemo\\Skins\\Skin0.BIN").unwrap(),
+            BinRef::Chunk {
+                chunk: chunk_hash("data/characters/teemo/skins/skin0.bin"),
+                name: "DATA/Characters/Teemo/Skins/Skin0.BIN".to_owned(),
+            }
+        );
+        assert_eq!(
+            BinRef::parse("00000000000000ff").unwrap(),
+            BinRef::Chunk {
+                chunk: WadHash(0xff),
+                name: "00000000000000ff".to_owned(),
+            }
+        );
+        assert_eq!(
+            BinRef::parse("Characters/Teemo/Skins/Skin0").unwrap(),
+            BinRef::Entry {
+                object: BinHash(0x591c_bdbd),
+                name: "Characters/Teemo/Skins/Skin0".to_owned(),
+            }
+        );
+        assert_eq!(
+            BinRef::parse("0x591cbdbd").unwrap(),
+            BinRef::Entry {
+                object: BinHash(0x591c_bdbd),
+                name: "0x591cbdbd".to_owned(),
+            }
+        );
+        assert!(BinRef::parse("").is_err());
+    }
+
+    #[test]
+    fn select_returns_chunk_of_path_and_declaring_chunks_of_entry() {
+        let installation = Installation::new();
+        installation.archive(
+            "A.wad.client",
+            &[("data/one.bin", &bin(1, 10)), ("data/two.bin", &bin(2, 20))],
+        );
+        installation.archive("B.wad.client", &[("data/other.bin", &bin(2, 30))]);
+        let game = installation.open();
+        let select = |text: &str| game.select(&BinRef::parse(text).unwrap());
+
+        assert_eq!(select("data/One.bin"), [chunk_hash("data/one.bin")]);
+        assert_eq!(
+            select(&format!("{:016x}", chunk_hash("data/two.bin").0)),
+            [chunk_hash("data/two.bin")]
+        );
+        assert_eq!(
+            select("0x00000002"),
+            [chunk_hash("data/two.bin"), chunk_hash("data/other.bin")]
+        );
+        assert!(select("data/missing.bin").is_empty());
+        assert!(select("0x00000003").is_empty());
     }
 
     #[test]
