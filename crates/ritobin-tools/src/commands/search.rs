@@ -31,7 +31,8 @@ use crate::{
     commands::gamedata::GameArgs,
     context::Context,
     document::scanned_format,
-    hashes::GameNames,
+    hashes::{GameNames, WadPaths},
+    package::{self, PackageKind, Visit},
     search::{self, Hit, Matched, Matcher, Pattern, Query, Row, Target},
     utils::plural,
 };
@@ -44,8 +45,9 @@ pub struct SearchArgs {
     #[arg(value_name = "PATTERN")]
     pub pattern: Option<String>,
 
-    /// Bin files, ritobin text files or directories to search. A directory is searched with its
-    /// subdirectories. Defaults to the bins of the game
+    /// Bin files, ritobin text files, WAD archives, mod packages (.fantome, .modpkg) or
+    /// directories to search. A directory is searched with its subdirectories. Defaults to the
+    /// bins of the game
     #[arg(value_name = "PATHS")]
     pub paths: Vec<Utf8PathBuf>,
 
@@ -227,12 +229,22 @@ enum Job {
         path: Utf8PathBuf,
         bins: Vec<(WadHash, String)>,
     },
+    /// The bins of a WAD archive or of a mod package that is given as a path.
+    Package {
+        path: Utf8PathBuf,
+        kind: PackageKind,
+        /// The `--bin` filter. A bin is searched if its path contains this text.
+        filter: Option<String>,
+    },
 }
 
 /// The hits of one document.
 struct Found {
-    /// The file path, or the chunk path of a game bin.
+    /// The file path, or the chunk path of a bin of the game or of a package.
     source: String,
+    /// The package that contains the bin, with the WAD inside a mod package. `None` for a
+    /// file and for a game bin, whose archive is the archive of its job.
+    archive: Option<String>,
     /// The number of hits.
     count: usize,
     /// The hits. Empty if the search only counts them.
@@ -414,8 +426,15 @@ fn game_jobs(ctx: &Context, args: &SearchArgs) -> Result<Vec<Job>> {
 /// Builds one job per file. A directory is replaced by the bin files and ritobin text files in
 /// it and in its subdirectories, sorted by path. `filter` is the `--bin` filter.
 ///
+/// A WAD archive or a mod package is one job for all of its bins.
+///
 /// Fails if a path does not exist.
 fn file_jobs(paths: &[Utf8PathBuf], filter: Option<&str>) -> Result<Vec<Job>> {
+    let package = |path: &Utf8Path, kind| Job::Package {
+        path: path.to_owned(),
+        kind,
+        filter: filter.map(str::to_owned),
+    };
     let mut jobs = Vec::new();
     for path in paths {
         if path.is_dir() {
@@ -430,19 +449,26 @@ fn file_jobs(paths: &[Utf8PathBuf], filter: Option<&str>) -> Result<Vec<Job>> {
                     tracing::warn!("Skipping non-UTF-8 path: {}", entry.path().display());
                     continue;
                 };
-                if scanned_format(file).is_some() {
+                if let Some(kind) = PackageKind::of(file) {
+                    jobs.push(package(file, kind));
+                } else if scanned_format(file).is_some() {
                     jobs.push(Job::File(file.to_owned()));
                 }
             }
         } else if path.exists() {
-            jobs.push(Job::File(path.clone()));
+            jobs.push(match PackageKind::of(path) {
+                Some(kind) => package(path, kind),
+                None => Job::File(path.clone()),
+            });
         } else {
             miette::bail!("Input does not exist: {path}");
         }
     }
+    // The filter is applied to the path of a file, and to the paths of the bins inside a
+    // package.
     jobs.retain(|job| match job {
         Job::File(path) => passes(&path.as_str().replace('\\', "/"), filter),
-        Job::Archive { .. } => true,
+        Job::Archive { .. } | Job::Package { .. } => true,
     });
     Ok(jobs)
 }
@@ -471,6 +497,7 @@ fn search(
     let mut failure = None;
     let scanner = Scanner {
         matcher,
+        paths: &names.paths,
         limit,
         // The `Paths` and `Counts` modes print no hit, so the workers only count the hits.
         count_only: matches!(mode, Mode::Paths | Mode::Counts),
@@ -483,7 +510,7 @@ fn search(
         };
         let archive = match &jobs[index] {
             Job::Archive { name, .. } => Some(name.as_str()),
-            Job::File(_) => None,
+            Job::File(_) | Job::Package { .. } => found.archive.as_deref(),
         };
         match printer.document(&found, archive) {
             Ok(proceed) => proceed,
@@ -583,6 +610,8 @@ fn run_jobs(
 #[derive(Clone, Copy)]
 struct Scanner<'a> {
     matcher: &'a Matcher,
+    /// Resolves the chunk hashes of a WAD archive that is given as a path.
+    paths: &'a WadPaths,
     /// The maximum number of hits of one document.
     limit: usize,
     /// If `true`, the hits are counted and not collected.
@@ -606,6 +635,7 @@ impl Scanner<'_> {
                 failed: 0,
                 found: (count > 0).then(|| Found {
                     source: source.to_owned(),
+                    archive: None,
                     count,
                     hits,
                 }),
@@ -666,6 +696,32 @@ impl Scanner<'_> {
                     if !send(self.scan(bin, data)) {
                         break;
                     }
+                }
+            }
+            Job::Package { path, kind, filter } => {
+                let mut visit = Visit {
+                    wants: &|name| passes(name, filter.as_deref()),
+                    bin: &mut |bin| {
+                        if stop.load(Ordering::Relaxed) {
+                            return false;
+                        }
+                        let mut scanned = self.scan(bin.name, bin.data);
+                        if let Some(found) = &mut scanned.found {
+                            found.archive = Some(match bin.part {
+                                Some(part) => format!("{path}/{part}"),
+                                None => path.to_string(),
+                            });
+                        }
+                        send(scanned)
+                    },
+                };
+                if let Err(error) = package::for_each_bin(path, *kind, self.paths, &mut visit) {
+                    tracing::warn!("Skipped {path}: {error}");
+                    send(Scanned {
+                        searched: 1,
+                        failed: 1,
+                        found: None,
+                    });
                 }
             }
         }
@@ -979,7 +1035,9 @@ mod tests {
         let names = |jobs: Vec<Job>| -> Vec<String> {
             jobs.into_iter()
                 .map(|job| match job {
-                    Job::File(path) => path.strip_prefix(&dir).unwrap().as_str().replace('\\', "/"),
+                    Job::File(path) | Job::Package { path, .. } => {
+                        path.strip_prefix(&dir).unwrap().as_str().replace('\\', "/")
+                    }
                     Job::Archive { name, .. } => name,
                 })
                 .collect()
@@ -1027,6 +1085,60 @@ mod tests {
                 failed: 0,
             }
         );
+    }
+
+    #[test]
+    fn search_reads_bins_of_wad_archive_and_fantome_file_in_directory() {
+        use crate::package::testing;
+
+        let (_guard, dir) = temp_dir();
+        std::fs::write(
+            dir.join("Items.wad.client"),
+            testing::wad(&[
+                ("data/sword.bin", &bin("Items/Sword", "Long Sword", 3)),
+                ("data/icon.dds", b"DDS"),
+            ]),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("mod.fantome"),
+            testing::zip(&[
+                ("META/info.json", b"{}"),
+                (
+                    "WAD/Items.wad.client/data/bow.bin",
+                    &bin("Items/Bow", "Long Bow", 3),
+                ),
+            ]),
+        )
+        .unwrap();
+        let sword = format!("0x{:08x}", BinHash::hash_str("Items/Sword").0);
+        let bow = format!("0x{:08x}", BinHash::hash_str("Items/Bow").0);
+        let item = format!("0x{:08x}", BinHash::hash_str("Item").0);
+        let name = format!("{:08x}", BinHash::hash_str("name").0);
+        // No hashtable is loaded, so the bin of the WAD archive is named by its chunk hash.
+        let chunk = format!("{:016x}", WadHash::hash_str("data/sword.bin").0);
+
+        let (out, totals) = run_in(&dir, &["long"], 2);
+        assert_eq!(
+            out,
+            format!(
+                "{chunk} [Items.wad.client]\n  {sword} : {item}\n    {name}: string = \"Long Sword\"\n\ndata/bow.bin [mod.fantome/WAD/Items.wad.client]\n  {bow} : {item}\n    {name}: string = \"Long Bow\"\n"
+            )
+        );
+        assert_eq!(
+            totals,
+            Totals {
+                matches: 2,
+                sources: 2,
+                searched: 2,
+                failed: 0,
+            }
+        );
+
+        // The `--bin` filter selects the bins inside a package by their path.
+        let (out, totals) = run_in(&dir, &["long", "--bin", "BOW.bin", "-l"], 1);
+        assert_eq!(out, "data/bow.bin\n");
+        assert_eq!(totals.searched, 1);
     }
 
     #[test]
@@ -1214,7 +1326,7 @@ mod tests {
                     name.as_str(),
                     bins.iter().map(|(_, bin)| bin.as_str()).collect(),
                 ),
-                Job::File(path) => (path.as_str(), Vec::new()),
+                Job::File(path) | Job::Package { path, .. } => (path.as_str(), Vec::new()),
             })
             .collect();
         assert_eq!(

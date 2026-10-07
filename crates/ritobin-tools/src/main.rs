@@ -18,6 +18,7 @@ mod game;
 mod gamedata;
 mod hashes;
 mod logging;
+mod package;
 mod search;
 mod utils;
 

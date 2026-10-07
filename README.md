@@ -391,7 +391,7 @@ A mismatched value is replaced like any other value. The report lists each of th
 
 ### search
 
-Searches bins for names, values and references. Without a path, the command searches every bin of the installed game. With paths, it searches those bin files, ritobin text files and directories. The command alias is `grep`.
+Searches bins for names, values and references. Without a path, the command searches every bin of the installed game. With paths, it searches those bin files, ritobin text files, WAD archives, mod packages and directories. The command alias is `grep`.
 
 ```bash
 # Find an entry and every reference to it in the game
@@ -414,6 +414,9 @@ ritobin-tools search -e '\.skn$' --type string --wad Champions/Teemo
 
 # Search files and directories, and print JSON Lines
 ritobin-tools search mushroom ./data skin0.rito -f jsonl
+
+# Search the bins inside a mod package or a WAD archive
+ritobin-tools search Characters/Teemo/Skins/Skin0 -x my-mod.fantome Teemo.wad.client
 ```
 
 The output of the `text` format is grouped by bin and by object:
@@ -490,8 +493,18 @@ The exit code is 0 if at least one match was found, 1 if nothing matched, and 2 
 
 A game search reads the list of bins from the object index, see [gamedata](#gamedata). It then reads every bin and takes a few seconds. `--wad` and `--bin` reduce the bins that are read. A bin that cannot be read is skipped with a warning.
 
+#### Searching archives and mod packages
+
+A path can be a WAD archive (`.wad.client`, `.wad.mobile`, `.wad`), a Fantome mod (`.fantome`) or a LeagueToolkit mod package (`.modpkg`). The command searches every bin inside it. A directory scan also searches the archives and the packages in the directory.
+
+- The `source` of a match is the path of the bin inside the package. The `archive` is the package file. For a mod package, the WAD inside the package follows, for example `my-mod.fantome/WAD/Teemo.wad.client`. A `.modpkg` layer other than `base` follows the WAD in parentheses.
+- A chunk is a bin if its path ends with `.bin`. The paths of a WAD archive come from the `game` hashtable. A chunk without a known path is read, and it is searched if its data starts with a bin magic. Such a bin is named by its chunk hash.
+- `--bin <TEXT>` selects the bins inside a package by their path.
+- A Fantome mod is read in all its forms: a packed WAD, a directory with the name of a WAD, the `RAW` directory, and the `WAD_<layer>` directories of layers.
+
 Limitations:
 
+- A packed WAD inside a Fantome mod is read into memory completely.
 - A game bin that declares no object is not searched.
 - A file path is matched by text only if the `game` hashtable is installed. It is always matched by its hash.
 
