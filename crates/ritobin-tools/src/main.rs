@@ -94,6 +94,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Ok(ExitCode::from(EXIT_FAILURE));
             }
         }
+        Commands::Completions { shell } => {
+            // The generator panics if a write fails. The script is generated in memory, so
+            // that a closed output pipe fails the command with an error instead.
+            let mut script = Vec::new();
+            cli::write_completions(shell, &mut script);
+            document::write_bytes(document::STDIO.into(), &script)?;
+        }
         #[cfg(windows)]
         Commands::Shell { command } => commands::shell::run(command)?,
     }

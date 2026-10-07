@@ -16,6 +16,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
+- **Shell completions** for bash, zsh, fish, PowerShell and elvish
 - **Windows Explorer** context menu, and drag-and-drop of files onto the executable
 - Works on Windows, Linux and macOS
 
@@ -663,6 +664,34 @@ ritobin-tools config set print_config.indent_size 2
 ritobin-tools config set hashtable_dir "D:/hashes"
 ritobin-tools config reset
 ```
+
+### completions
+
+Prints a completion script for a shell. The script completes the commands, the flags and the values of flags that have a fixed set of values.
+
+```bash
+ritobin-tools completions <bash|elvish|fish|powershell|zsh>
+```
+
+Install the script for your shell:
+
+```bash
+# bash
+ritobin-tools completions bash > ~/.local/share/bash-completion/completions/ritobin-tools
+
+# zsh. The directory must be in $fpath
+ritobin-tools completions zsh > ~/.zfunc/_ritobin-tools
+
+# fish
+ritobin-tools completions fish > ~/.config/fish/completions/ritobin-tools.fish
+```
+
+```powershell
+# PowerShell. Add this line to the file that $PROFILE names
+ritobin-tools completions powershell | Out-String | Invoke-Expression
+```
+
+Generate the script again after you update the tool, so that it has the commands and the flags of the new version.
 
 ### shell
 

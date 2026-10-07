@@ -622,6 +622,19 @@ fn merge_writes_base_with_values_of_partial_edit() {
 }
 
 #[test]
+fn completions_prints_script_for_shell() {
+    let ws = Workspace::new();
+    let output = ws.tool().args(["completions", "bash"]).output().unwrap();
+    assert!(output.status.success());
+    let script = stdout(&output);
+    assert!(script.contains("ritobin-tools"), "{script}");
+    assert!(script.contains("--game-dir"), "{script}");
+
+    let output = ws.tool().args(["completions", "cmd"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn hashes_hash_prints_bin_hash() {
     let ws = Workspace::new();
     let output = ws
