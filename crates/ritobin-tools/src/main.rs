@@ -20,6 +20,7 @@ mod hashes;
 mod logging;
 mod package;
 mod search;
+mod unknown;
 mod utils;
 
 /// The exit code of a failed command.

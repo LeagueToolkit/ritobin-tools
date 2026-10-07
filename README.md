@@ -13,7 +13,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Merge** partial bins into a base bin
 - **Search** bin files or every bin of the installed game for names, values and references
 - **Game bins**: extract bins of the installed game to files, and compare or patch a game bin with `game:<BIN>`
-- **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
+- **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export, and list the hashes of bins that have no name
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
 - **Shell completions** for bash, zsh, fish, PowerShell and elvish
@@ -536,9 +536,13 @@ ritobin-tools hashes search rollover --table fields
 
 # Export a table in the CDragon text format
 ritobin-tools hashes export types -o hashes.bintypes.txt
+
+# List the hashes of the game, or of files, that no table resolves
+ritobin-tools hashes unknown -n 50
+ritobin-tools hashes unknown ./mod my-mod.fantome --table fields,types
 ```
 
-`check`, `status`, `lookup`, `hash` and `search` accept `-f, --format <table|json>`.
+`check`, `status`, `lookup`, `hash`, `search` and `unknown` accept `-f, --format <table|json>`.
 
 A bin uses four tables. `--table` accepts their short names:
 
@@ -548,6 +552,28 @@ A bin uses four tables. `--table` accepts their short names:
 | `fields` | Property names |
 | `hashes` | Values of `hash` and `link` properties |
 | `types` | Class names |
+
+#### Hashes without a name
+
+`hashes unknown` reads bins and lists every hash that no hashtable resolves. Without a path it reads every bin of the installed game. With paths it reads those bin files, ritobin text files, WAD archives, mod packages and directories, like [search](#search).
+
+```
+TABLE    HASH        COUNT   BINS   EXAMPLE
+types    0x0a0eddc9  19188   1177   data/characters/aatrox/aatrox.bin: Characters/Aatrox/Spells/AatroxBasicAttack mSpell.Cooldown
+fields   0x0a3e0478  18676   1177   data/characters/aatrox/aatrox.bin: Characters/Aatrox/Spells/AatroxBasicAttack mSpell.Cooldown.0a3e0478
+```
+
+- `-t, --table <TABLES>`: list only the hashes of these tables, separated by commas: `entries`, `fields`, `hashes`, `types` and `game`
+- `-n, --limit <N>`: print at most N hashes. The most frequent hashes are printed first
+- `--wad <TEXT>`, `--bin <TEXT>`: read only the game archives or the bins whose name contains the text
+- `--game-dir <DIR>`, `--index-dir <DIR>`: as for [gamedata](#gamedata)
+- `-j, --threads <N>`: number of worker threads
+
+`COUNT` is the number of occurrences and `BINS` is the number of bins that contain the hash. `EXAMPLE` is one occurrence: the bin, the object and the path of the value. The `json` format has these as the fields `source`, `archive`, `object`, `object_name` and `path`.
+
+The tables of the list differ from the hashtables in two points. The value of a `link` property is listed under `entries`, and it has a name if the `entries` table or the `hashes` table has one. `game` lists the values of `file` properties, as 16 hex digits.
+
+The property names in the records of a `PTCH` file are stored as text, so the command reads only the objects of a `PTCH` file. A name that is written in a ritobin text file is listed if no hashtable has it.
 
 ### gamedata
 

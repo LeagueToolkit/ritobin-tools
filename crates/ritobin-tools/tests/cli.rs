@@ -650,6 +650,59 @@ fn hashes_hash_prints_bin_hash() {
 }
 
 #[test]
+fn hashes_unknown_lists_hashes_that_no_table_resolves() {
+    let ws = Workspace::new();
+    let text = ws.write("skin0.rito", BASE);
+    let tables = ws.field_table();
+
+    // The field names are in the text table. The entry path and the class are not.
+    let output = ws
+        .tool()
+        .args(["hashes", "unknown"])
+        .arg(&text)
+        .args(["--format", "json", "--hashtable"])
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let listed: Vec<(&str, &str)> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["table"].as_str().unwrap(),
+                row["hash"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let entry = format!("0x{:08x}", fnv1a("Characters/Test/Skins/Skin0"));
+    let class = format!("0x{:08x}", fnv1a("SkinCharacterDataProperties"));
+    assert_eq!(
+        listed,
+        [("entries", entry.as_str()), ("types", class.as_str())]
+    );
+    assert_eq!(rows[0]["count"], 1);
+    assert_eq!(rows[0]["bins"], 1);
+    assert!(stderr(&output).contains("Found 2 hashes without a name (1 entries, 1 types)"));
+
+    // Without the table the three field names are listed as well.
+    let output = ws
+        .tool()
+        .args(["hashes", "unknown"])
+        .arg(&text)
+        .args(["--table", "fields"])
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&output).lines().count(), 4, "{}", stdout(&output));
+
+    let no_game = ws.tool().args(["hashes", "unknown"]).output().unwrap();
+    assert_eq!(no_game.status.code(), Some(1));
+    assert!(stderr_line(&no_game).contains("no game directory is set"));
+}
+
+#[test]
 fn hashes_lookup_uses_text_tables() {
     let ws = Workspace::new();
     let tables = ws.field_table();

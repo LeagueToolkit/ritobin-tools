@@ -11,4 +11,5 @@ pub mod patch;
 pub mod search;
 #[cfg(windows)]
 pub mod shell;
+pub mod unknown;
 pub mod write;
