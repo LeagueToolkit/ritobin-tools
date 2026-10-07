@@ -352,6 +352,106 @@ fn diff_saves_patch_with_named_record() {
 }
 
 #[test]
+fn patch_applies_saved_patch_and_exits_1_if_record_is_skipped() {
+    let ws = Workspace::new();
+    let base = ws.write("base.rito", BASE);
+    let edited = ws.write(
+        "edited.rito",
+        &BASE.replace("Size: f32 = 1", "Size: f32 = 2"),
+    );
+    let tables = ws.field_table();
+    let patch = ws.path("size.ptch");
+    ws.tool()
+        .arg("diff")
+        .arg(&base)
+        .arg(&edited)
+        .args(["--format", "summary", "--patch"])
+        .arg(&patch)
+        .arg("--hashtable")
+        .arg(&tables)
+        .assert()
+        .success();
+
+    let patched = ws.path("patched.bin");
+    let output = ws
+        .tool()
+        .arg("patch")
+        .arg(&base)
+        .arg(&patch)
+        .arg("--output")
+        .arg(&patched)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["written"], true);
+    assert_eq!(report["patches"][0]["applied"], 1);
+    assert_eq!(report["patches"][0]["skipped"], serde_json::json!([]));
+
+    ws.tool().arg("convert").arg(&edited).assert().success();
+    assert_eq!(
+        fs::read(&patched).unwrap(),
+        fs::read(ws.path("edited.bin")).unwrap()
+    );
+    assert_eq!(read(&base), BASE);
+
+    // With `-o -`, standard output contains the patched bin and the report is on standard error.
+    let output = ws
+        .tool()
+        .arg("patch")
+        .arg(&base)
+        .arg(&patch)
+        .args(["--output", "-", "--hashtable"])
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let printed = stdout(&output);
+    assert!(printed.starts_with("#PROP_text"), "{printed}");
+    assert!(printed.contains("Size: f32 = 2"), "{printed}");
+    assert!(stderr(&output).contains("APPLIED"));
+
+    // The object of the record does not exist in this bin.
+    let other_text = BASE.replace("Skins/Skin0", "Skins/Skin1");
+    let other = ws.write("other.rito", &other_text);
+    let output = ws
+        .tool()
+        .arg("patch")
+        .arg(&other)
+        .arg(&patch)
+        .arg("--in-place")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stdout(&output).contains("the bin has no object with this path hash"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(stderr_line(&output).contains("1 record could not be applied. No file was written"));
+    assert_eq!(read(&other), other_text);
+
+    ws.tool()
+        .arg("patch")
+        .arg(&other)
+        .arg(&patch)
+        .args(["--in-place", "--partial"])
+        .assert()
+        .success();
+
+    let output = ws
+        .tool()
+        .arg("patch")
+        .arg(&base)
+        .arg(&patch)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("No output was given"));
+}
+
+#[test]
 fn hashes_hash_prints_bin_hash() {
     let ws = Workspace::new();
     let output = ws

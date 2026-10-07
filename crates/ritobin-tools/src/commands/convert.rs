@@ -13,7 +13,7 @@ use crate::{
         converted_path, detect_file, encode, reads_back, scanned_format, write_bytes,
     },
     hashes::BinHashes,
-    utils::{hyperlink_path, plural},
+    utils::{hyperlink_path, plural, same_file_key},
 };
 
 #[derive(Args, Debug)]
@@ -226,19 +226,6 @@ fn check_overwrites(jobs: &[Job]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Returns a key that is equal for two paths to the same file: the absolute path with `/`
-/// separators, lowercased on Windows.
-fn same_file_key(path: &Utf8Path) -> String {
-    let absolute = std::path::absolute(path)
-        .map(|absolute| absolute.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path.to_string());
-    let key = absolute.replace('\\', "/");
-    match cfg!(windows) {
-        true => key.to_lowercase(),
-        false => key,
-    }
 }
 
 /// Builds the conversions for the files of one format in `dir`, sorted by path. The output of a

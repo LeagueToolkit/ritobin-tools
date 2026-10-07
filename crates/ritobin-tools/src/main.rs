@@ -73,6 +73,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 return Ok(ExitCode::from(EXIT_DIFFERENT));
             }
         }
+        Commands::Patch(args) => commands::patch::run(&ctx, args)?,
         Commands::Search(args) => {
             if !commands::search::run(&ctx, args)? {
                 return Ok(ExitCode::from(EXIT_NO_MATCH));
