@@ -10,7 +10,7 @@ use crate::{
     context::Context,
     document::{
         DEFAULT_TEXT_EXTENSION, Document, Format, ReadOptions, STDIO, TEXT_EXTENSIONS, TextLayout,
-        converted_path, detect_file, encode, has_text_header, reads_back, write_bytes,
+        converted_path, detect_file, encode, reads_back, scanned_format, write_bytes,
     },
     hashes::BinHashes,
     utils::{hyperlink_path, plural},
@@ -271,17 +271,11 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
             tracing::warn!("Skipping non-UTF-8 path: {}", entry.path().display());
             continue;
         };
-        if path.extension().and_then(Format::from_extension) != Some(from) {
-            continue;
-        }
-        // `.py` is also the extension of Python source files. The C++ ritobin treats a `.py`
-        // file as ritobin text only if it starts with the ritobin header, and this scan does
-        // the same. A file that cannot be read is included, so the conversion reports the error.
-        let python = path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
-        if python && !has_text_header(path).unwrap_or(true) {
-            tracing::debug!("Skipped {path}: the file does not start with a ritobin text header");
+        // The extension is tested first, because `scanned_format` reads the start of a `.py`
+        // file.
+        if path.extension().and_then(Format::from_extension) != Some(from)
+            || scanned_format(path) != Some(from)
+        {
             continue;
         }
         files.push(path.to_owned());

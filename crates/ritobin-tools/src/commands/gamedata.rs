@@ -48,12 +48,12 @@ pub struct GameArgs {
 
 impl GameArgs {
     /// Returns the game directory from `--game-dir`, falling back to the config.
-    fn dir<'a>(&'a self, ctx: &'a Context) -> Option<&'a Utf8Path> {
+    pub fn dir<'a>(&'a self, ctx: &'a Context) -> Option<&'a Utf8Path> {
         self.game_dir.as_deref().or(ctx.config.game_dir.as_deref())
     }
 
     /// Opens the game. Fails if no game directory is configured.
-    fn open(&self, ctx: &Context) -> Result<Game> {
+    pub fn open(&self, ctx: &Context) -> Result<Game> {
         let dir = self.dir(ctx).ok_or_else(|| {
             miette::miette!(
                 "No game directory is set. Pass --game-dir, or run `ritobin-tools config set game_dir <DIR>`"

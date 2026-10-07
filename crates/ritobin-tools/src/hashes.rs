@@ -231,6 +231,16 @@ impl WadPaths {
     pub fn path(&self, chunk: WadHash) -> Option<String> {
         Some(self.0.as_ref()?.get(chunk.0)?.into_owned())
     }
+
+    /// Calls `visit` for every chunk hash and path of the table, in table order. Calls nothing
+    /// if the table is not loaded.
+    pub fn for_each_path(&self, mut visit: impl FnMut(WadHash, &str)) {
+        if let Some(db) = &self.0 {
+            for (hash, path) in db.iter() {
+                visit(WadHash(hash), &path);
+            }
+        }
+    }
 }
 
 impl ltk_wad::PathResolver for WadPaths {

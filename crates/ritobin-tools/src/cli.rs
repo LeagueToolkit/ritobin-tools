@@ -18,6 +18,7 @@ use crate::{
         diff::DiffArgs,
         gamedata::GameDataCommand,
         hashes::{HashesCommand, SyncArgs},
+        search::SearchArgs,
     },
     document::{MAX_LINE_WIDTH, MIN_LINE_WIDTH, TextLayout},
 };
@@ -83,6 +84,10 @@ pub enum Commands {
 
     /// Show the difference between two bins, and optionally save it as a PTCH patch
     Diff(DiffArgs),
+
+    /// Search bin files or the bins of the game for names, values and references
+    #[command(visible_alias = "grep")]
+    Search(SearchArgs),
 
     /// Manage and query the hashtables
     Hashes {
@@ -332,6 +337,8 @@ mod tests {
         for name in [
             "convert",
             "diff",
+            "search",
+            "grep",
             "hashes",
             "download-hashes",
             "dl",

@@ -5,7 +5,7 @@
 
 use std::{
     cell::{OnceCell, RefCell},
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs::File,
     io::{BufReader, Cursor},
     rc::Rc,
@@ -25,6 +25,16 @@ const ARCHIVES_DIR: &str = "DATA/FINAL";
 
 const CHUNK_INDEX_FILE: &str = "game_index.bin";
 const OBJECT_INDEX_FILE: &str = "object_index.bin";
+
+/// One archive of the game and its bin chunks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveBins {
+    /// The archive path relative to `DATA/FINAL`, with `/` separators.
+    pub name: String,
+    /// The absolute path of the archive file.
+    pub path: Utf8PathBuf,
+    pub chunks: Vec<WadHash>,
+}
 
 pub struct Game {
     dir: Utf8PathBuf,
@@ -180,6 +190,39 @@ impl Game {
                 }
             }
         })
+    }
+
+    /// Returns the bin chunks of the game, grouped by archive, in archive name order. The chunks
+    /// of an archive are in ascending hash order.
+    ///
+    /// The list comes from the object index. Each chunk is listed once, under the archive that
+    /// the index read it from. A bin that declares no object is not listed.
+    pub fn bin_archives(&self) -> Vec<ArchiveBins> {
+        let objects = self.objects();
+        let mut chunks = BTreeSet::new();
+        for object in objects.objects() {
+            for declaration in objects.declarations(object) {
+                chunks.insert((declaration.archive, declaration.chunk));
+            }
+        }
+
+        let mut archives: Vec<ArchiveBins> = Vec::new();
+        let mut last = None;
+        for (archive, chunk) in chunks {
+            if last != Some(archive) {
+                let entry = self.index.archive(archive);
+                archives.push(ArchiveBins {
+                    name: entry.name.clone(),
+                    path: entry.path.clone(),
+                    chunks: Vec::new(),
+                });
+                last = Some(archive);
+            }
+            if let Some(bins) = archives.last_mut() {
+                bins.chunks.push(chunk);
+            }
+        }
+        archives
     }
 
     /// Returns the chunks that declare `object`, deduplicated, in object index order.
@@ -387,6 +430,41 @@ mod tests {
             Some(&values::I32::new(20).into())
         );
         assert_eq!(game.object(BinHash(3)).unwrap(), None);
+    }
+
+    #[test]
+    fn bin_archives_list_each_bin_chunk_under_one_archive() {
+        let installation = Installation::new();
+        installation.archive(
+            "B.wad.client",
+            &[
+                ("data/shared.bin", &bin(1, 10)),
+                ("data/two.bin", &bin(2, 20)),
+            ],
+        );
+        installation.archive(
+            "A.wad.client",
+            &[
+                ("data/shared.bin", &bin(1, 10)),
+                ("data/notes.txt", b"not a bin"),
+            ],
+        );
+
+        let game = installation.open();
+        let archives = game.bin_archives();
+        let listed: Vec<(&str, &[WadHash])> = archives
+            .iter()
+            .map(|archive| (archive.name.as_str(), archive.chunks.as_slice()))
+            .collect();
+        // `data/shared.bin` is in both archives. The index reads it from the first one.
+        assert_eq!(
+            listed,
+            [
+                ("A.wad.client", [chunk_hash("data/shared.bin")].as_slice()),
+                ("B.wad.client", [chunk_hash("data/two.bin")].as_slice()),
+            ]
+        );
+        assert!(archives[0].path.ends_with("A.wad.client"));
     }
 
     #[test]
