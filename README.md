@@ -86,7 +86,7 @@ Converts between binary `.bin` and ritobin text. The input format is detected fr
 
 Common flags:
 
-- `[INPUTS]...` or `-i, --input <PATH>...`: files or directories. `-` reads standard input
+- `[INPUTS]...` or `-i, --input <PATH>...`: files or directories. `-` reads standard input. `game:<BIN>` reads a bin of the installed game, see [Game bins as inputs](#game-bins-as-inputs)
 - `-o, --output <PATH>`: a file for a file input, a directory for a directory input, or `-` for standard output. Requires exactly one input
 - `-r, --recursive`: include the subdirectories of a directory input
 - `-t, --to <bin|rito>`: output format. Defaults to the format of the output file extension, or to the other format than the input
@@ -541,9 +541,12 @@ With `--output-dir`, a bin that cannot be read or printed does not stop the run.
 
 #### Game bins as inputs
 
-`diff` and `patch` accept `game:<BIN>` in place of a file path. The bin is read from the game. `<BIN>` has the forms of a `BINS` argument of `gamedata extract`, and it must select exactly one bin.
+`convert`, `diff` and `patch` accept `game:<BIN>` in place of a file path. The bin is read from the game. `<BIN>` has the forms of a `BINS` argument of `gamedata extract`, and it must select exactly one bin.
 
 ```bash
+# Print a game bin as text
+ritobin-tools convert game:data/characters/teemo/skins/skin0.bin -o -
+
 # Show what an edited bin changes, compared with the game
 ritobin-tools diff game:data/characters/teemo/skins/skin0.bin ./mod/skin0.bin -f summary
 
@@ -557,7 +560,7 @@ ritobin-tools patch game:data/characters/teemo/skins/skin0.bin edited.ptch --dry
 ritobin-tools patch game:data/characters/teemo/skins/skin0.bin edited.ptch -o ./out/skin0.bin
 ```
 
-Both commands accept `--game-dir` and `--index-dir`.
+These commands accept `--game-dir` and `--index-dir`. `convert` requires `--output` for a game bin, because a game bin has no directory for a default output path.
 
 ### config
 

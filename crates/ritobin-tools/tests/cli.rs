@@ -651,7 +651,7 @@ fn gamedata_check_exits_1_when_a_problem_is_reported() {
 }
 
 #[test]
-fn gamedata_extract_writes_game_bins_and_diff_and_patch_read_game_inputs() {
+fn gamedata_extract_writes_game_bins_and_convert_diff_and_patch_read_game_inputs() {
     let ws = Workspace::new();
     let tables = ws.field_table();
     let base = ws.write("base.rito", BASE);
@@ -702,6 +702,26 @@ fn gamedata_extract_writes_game_bins_and_diff_and_patch_read_game_inputs() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr_line(&output).contains("No game archive contains the bin data/missing.bin"));
     assert!(!ws.path("missing.bin").exists());
+
+    // `convert` reads its input from the game. The output format defaults to text.
+    let mut convert = ws.tool();
+    convert
+        .args(["convert", "game:data/skin0.bin", "--output", "-"])
+        .arg("--hashtable")
+        .arg(&tables);
+    game_args(&mut convert);
+    let output = convert.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = stdout(&output);
+    assert!(printed.starts_with("#PROP_text"), "{printed}");
+    assert!(printed.contains("Size: f32 = 1"), "{printed}");
+
+    let mut convert = ws.tool();
+    convert.args(["convert", "game:data/skin0.bin"]);
+    game_args(&mut convert);
+    let output = convert.output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("has no default output path"));
 
     // `diff` reads its base from the game.
     let edited = ws.write(
