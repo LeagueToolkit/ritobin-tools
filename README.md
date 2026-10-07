@@ -9,6 +9,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Convert** `.bin` to `.rito` and back, for both `PROP` bins and `PTCH` patch bins
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text
+- **Search** bin files or every bin of the installed game for names, values and references
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
 - **Batch** conversion of directories, and `-` for standard input and output
@@ -201,6 +202,105 @@ The tool logs a warning if a limitation affects the patch. The `json` format lis
 
 The other formats and `--patch` require two `PROP` bins. If either input is a `PTCH` file, use the `unified` format.
 
+### search
+
+Searches bins for names, values and references. Without a path, the command searches every bin of the installed game. With paths, it searches those bin files, ritobin text files and directories. The command alias is `grep`.
+
+```bash
+# Find an entry and every reference to it in the game
+ritobin-tools search Characters/Teemo/Animations/Skin0 -x
+
+# List the bins that use an asset
+ritobin-tools search Teemo_Base.skn -l
+
+# Find the objects and the nested structs of a class
+ritobin-tools search SkinMeshDataProperties --in classes -x
+
+# List every value of a property
+ritobin-tools search --values --field championSkinId
+
+# Find a number in the values of one property
+ritobin-tools search 0.7 --field selfIllumination
+
+# Search strings with a regular expression, in one archive
+ritobin-tools search -e '\.skn$' --type string --wad Champions/Teemo
+
+# Search files and directories, and print JSON Lines
+ritobin-tools search mushroom ./data skin0.rito -f jsonl
+```
+
+The output of the `text` format is grouped by bin and by object:
+
+```text
+data/characters/teemo/skins/skin2.bin [Champions/Teemo.wad.client]
+  Characters/Teemo/Skins/Skin2 : SkinCharacterDataProperties
+    skinAnimationProperties.animationGraphData: link = "Characters/Teemo/Animations/Skin0"
+```
+
+A search tests five parts of a bin. `--in` selects them:
+
+| Part | Tested |
+| --- | --- |
+| `entries` | The path of each object |
+| `classes` | The class of each object and of each nested struct |
+| `fields` | The name of each property |
+| `values` | Each value without nested values, each list item, and each map key and map value |
+| `dependencies` | Each item of the dependency list of the bin |
+
+How `PATTERN` is compared:
+
+- With text: the pattern matches a substring of a string value or of a name, without regard to case. `-x` matches the whole text. `-s` matches with regard to case. The name of a hash comes from the hashtables.
+- As a hash: the pattern is hashed as a bin name and as a file path. It therefore matches an entry, a class, a property or a reference with that hash, even if no hashtable resolves the hash.
+- As `0x` hex: 1 to 8 digits match the bin hash with that value, and 9 to 16 digits match the file hash with that value.
+- As a number: a pattern that is a number matches the numeric values equal to it. `true` and `false` match boolean values. A vector, a matrix or a color matches if one of its components is equal.
+
+`-e, --regex <REGEX>` searches with a regular expression instead. It is matched against the text of each item. The text of a number is its ritobin text, for example `0.7` or `{ 50, 150, 150 }`.
+
+`--values` lists every value that passes the filters, without a pattern. With `--regex` or `--values`, all positional arguments are paths.
+
+Filters:
+
+- `-t, --type <TYPES>`: search only values of these ritobin types, for example `string`, `link,hash`, `file` or `f32`
+- `--field <FIELD>`: search only the values of this property
+- `--class <CLASS>`: search only the properties of objects and structs of this class
+- `--object <ENTRY>`, `--object-class <CLASS>`: search only this object, or only objects of this class
+- `--wad <TEXT>`: search only the game archives whose name contains the text
+- `--bin <TEXT>`: search only the bins whose path contains the text
+
+A filter name is hashed, so it requires no hashtable. A filter also accepts a `0x` hash.
+
+Other flags:
+
+- `-f, --format <text|json|jsonl>`: `json` prints one array, `jsonl` prints one object per line
+- `-l, --files-with-matches`: print only the path of each bin that has a match
+- `-c, --count`: print the path and the number of matches of each bin that has a match
+- `-m, --limit <N>`: stop after this number of matches
+- `-j, --threads <N>`: number of worker threads. Defaults to the number of processor cores
+- `--game-dir <DIR>`, `--index-dir <DIR>`: as for [gamedata](#gamedata)
+
+Fields of the `json` and `jsonl` formats:
+
+| Field | Meaning |
+| --- | --- |
+| `source` | Path of the file, or path of the bin in the game |
+| `archive` | Game archive that contains the bin. Missing for a file |
+| `matched` | The parts that matched: `entry`, `class`, `field`, `key`, `value` or `dependency` |
+| `object`, `object_name`, `class` | The object that contains the match, as for [diff](#diff) |
+| `path` | Path of the value inside the object. `null` for a match on the object itself or on a dependency |
+| `type` | Ritobin type of the value |
+| `value` | The value as ritobin text. For a struct, its class |
+| `count` | Item count of a list, an option or a map |
+
+The exit code is 0 if at least one match was found, 1 if nothing matched, and 2 if the command failed.
+
+A game search reads the list of bins from the object index, see [gamedata](#gamedata). It then reads every bin and takes a few seconds. `--wad` and `--bin` reduce the bins that are read. A bin that cannot be read is skipped with a warning.
+
+Limitations:
+
+- The records of a `PTCH` bin are not searched, only its objects.
+- A game bin that declares no object is not searched.
+- A file path is matched by text only if the `game` hashtable is installed. It is always matched by its hash.
+
 ### hashes
 
 Bins store names as hashes. The hashtables map the hashes back to names. ritobin-tools reads the hashtables from the Mimir cache, which all LeagueToolkit tools share.
@@ -347,7 +447,7 @@ Settings are read from `ritobin-tools.toml` in the directory of the executable, 
 # Hashtable cache directory. Omit it to use the shared cache.
 hashtable_dir = "D:/hashes"
 
-# Game directory used by the gamedata commands.
+# Game directory used by the search and gamedata commands.
 game_dir = "C:/Riot Games/League of Legends"
 
 # Layout of printed ritobin text.

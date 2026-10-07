@@ -551,6 +551,137 @@ fn gamedata_check_exits_1_when_a_problem_is_reported() {
 }
 
 #[test]
+fn search_exit_code_is_0_on_match_1_on_no_match_and_2_on_failure() {
+    let ws = Workspace::new();
+    let text = ws.write("skin0.rito", BASE);
+    let tables = ws.field_table();
+
+    let found = ws
+        .tool()
+        .args(["search", "BASE"])
+        .arg(&text)
+        .arg("--hashtable")
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert_eq!(found.status.code(), Some(0));
+    let out = stdout(&found);
+    assert!(out.contains("    Name: string = \"base\"\n"), "{out}");
+    assert!(stderr(&found).contains("Found 1 match in 1 bin"));
+
+    let none = ws
+        .tool()
+        .args(["search", "no such text"])
+        .arg(&text)
+        .output()
+        .unwrap();
+    assert_eq!(none.status.code(), Some(1));
+    assert!(stdout(&none).is_empty());
+
+    let missing = ws
+        .tool()
+        .args(["search", "base"])
+        .arg(ws.path("missing.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(stderr_line(&missing).contains("Input does not exist"));
+
+    let no_pattern = ws.tool().arg("search").output().unwrap();
+    assert_eq!(no_pattern.status.code(), Some(2));
+    assert!(stderr_line(&no_pattern).contains("No pattern was given"));
+}
+
+#[test]
+fn search_lists_values_of_field_and_matches_regex() {
+    let ws = Workspace::new();
+    let text = ws.write("skin0.rito", BASE);
+    let tables = ws.field_table();
+
+    let values = ws
+        .tool()
+        .args(["search", "--values", "--field", "Tags"])
+        .arg(&text)
+        .arg("--hashtable")
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert_eq!(values.status.code(), Some(0));
+    let out = stdout(&values);
+    assert!(out.contains("    Tags[0]: string = \"a\"\n"), "{out}");
+    assert!(out.contains("    Tags[1]: string = \"b\"\n"), "{out}");
+
+    let regex = ws
+        .tool()
+        .args([
+            "grep",
+            "-e",
+            "^(Size|Name)$",
+            "--in",
+            "fields",
+            "-f",
+            "jsonl",
+        ])
+        .arg(&text)
+        .arg("--hashtable")
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert_eq!(regex.status.code(), Some(0));
+    let paths: Vec<String> = stdout(&regex)
+        .lines()
+        .map(|line| {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(record["matched"], serde_json::json!(["field"]));
+            record["path"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(paths, ["Size", "Name"]);
+}
+
+#[test]
+fn search_reads_bins_of_game_when_no_path_is_given() {
+    let ws = Workspace::new();
+    let base = ws.write("base.rito", BASE);
+    ws.tool().arg("convert").arg(&base).assert().success();
+    let game = write_game(
+        &ws,
+        &[
+            ("data/skin0.bin", &fs::read(ws.path("base.bin")).unwrap()),
+            ("data/notes.txt", b"Characters/Test/Skins/Skin0"),
+        ],
+    );
+
+    // No hashtable is installed. The entry is found because the pattern is hashed.
+    let found = ws
+        .tool()
+        .args(["search", "Characters/Test/Skins/Skin0", "-f", "jsonl"])
+        .arg("--game-dir")
+        .arg(&game)
+        .arg("--index-dir")
+        .arg(ws.path("index"))
+        .output()
+        .unwrap();
+    assert_eq!(found.status.code(), Some(0), "{}", stderr(&found));
+    let out = stdout(&found);
+    let records: Vec<serde_json::Value> = out
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1, "{out}");
+    assert_eq!(records[0]["archive"], "Test.wad.client");
+    assert_eq!(records[0]["matched"], serde_json::json!(["entry"]));
+    assert_eq!(
+        records[0]["object"],
+        format!("0x{:08x}", fnv1a("Characters/Test/Skins/Skin0"))
+    );
+
+    let no_game = ws.tool().args(["search", "base"]).output().unwrap();
+    assert_eq!(no_game.status.code(), Some(2));
+    assert!(stderr_line(&no_game).contains("no game directory is set"));
+}
+
+#[test]
 fn hashtable_dir_prints_cache_directory() {
     let ws = Workspace::new();
     let output = ws.tool().arg("hashtable-dir").output().unwrap();

@@ -258,6 +258,23 @@ pub fn has_text_header(path: &Utf8Path) -> io::Result<bool> {
     Ok(HEADERS.iter().any(|header| start.starts_with(header)))
 }
 
+/// Returns the format that a directory scan assigns to the file at `path`, from its file
+/// extension. Returns `None` for an unknown extension.
+///
+/// `.py` is also the extension of Python source files. The C++ ritobin treats a `.py` file as
+/// ritobin text only if it starts with the ritobin header, and this function does the same. It
+/// returns `None` for a `.py` file without the header. A `.py` file that cannot be read is
+/// treated as ritobin text, so that the caller reports the read error.
+pub fn scanned_format(path: &Utf8Path) -> Option<Format> {
+    let extension = path.extension()?;
+    let format = Format::from_extension(extension)?;
+    if extension.eq_ignore_ascii_case("py") && !has_text_header(path).unwrap_or(true) {
+        tracing::debug!("Skipped {path}: the file does not start with a ritobin text header");
+        return None;
+    }
+    Some(format)
+}
+
 /// Reads all bytes of the file at `path`, or of standard input if `path` is [`STDIO`].
 pub fn read_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
     if path == STDIO {
@@ -687,6 +704,29 @@ mod tests {
 
         std::fs::write(&path, "x").unwrap();
         assert_eq!(detect_file(&path).unwrap(), Format::Rito);
+    }
+
+    #[test]
+    fn scanned_format_requires_text_header_for_py_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(dir.path()).unwrap();
+        let file = |name: &str, content: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, content).unwrap();
+            path
+        };
+
+        assert_eq!(scanned_format(&file("a.bin", "")), Some(Format::Bin));
+        assert_eq!(scanned_format(&file("a.rito", "")), Some(Format::Rito));
+        assert_eq!(
+            scanned_format(&file("a.py", "#PROP_text\n")),
+            Some(Format::Rito)
+        );
+        assert_eq!(scanned_format(&file("b.PY", "print('hi')\n")), None);
+        assert_eq!(scanned_format(&file("a.json", "{}")), None);
+        assert_eq!(scanned_format(&dir.join("no-extension")), None);
+        // A `.py` file that cannot be read is treated as ritobin text.
+        assert_eq!(scanned_format(&dir.join("missing.py")), Some(Format::Rito));
     }
 
     #[test]

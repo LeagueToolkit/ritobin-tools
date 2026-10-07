@@ -18,6 +18,7 @@ mod game;
 mod gamedata;
 mod hashes;
 mod logging;
+mod search;
 mod utils;
 
 /// The exit code of a failed command.
@@ -26,8 +27,12 @@ const EXIT_FAILURE: u8 = 1;
 /// The exit code of `diff --exit-code` if the bins differ.
 const EXIT_DIFFERENT: u8 = 1;
 
-/// The exit code of `diff --exit-code` if the command fails. It differs from [`EXIT_DIFFERENT`]
-/// so that a script can distinguish a failure from a difference.
+/// The exit code of `search` if nothing matches, as for `grep`.
+const EXIT_NO_MATCH: u8 = 1;
+
+/// The exit code of `diff --exit-code` and of `search` if the command fails. It differs from
+/// [`EXIT_DIFFERENT`] and [`EXIT_NO_MATCH`] so that a script can distinguish a failure from a
+/// difference or from a search without matches.
 const EXIT_TROUBLE: u8 = 2;
 
 fn main() -> ExitCode {
@@ -37,6 +42,7 @@ fn main() -> ExitCode {
     let pause = cli.pause;
     let failure = match &cli.command {
         Commands::Diff(args) if args.exit_code => EXIT_TROUBLE,
+        Commands::Search(_) => EXIT_TROUBLE,
         _ => EXIT_FAILURE,
     };
     let outcome = run(cli);
@@ -65,6 +71,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             let differs = commands::diff::run(&ctx, args)?;
             if exit_code && differs {
                 return Ok(ExitCode::from(EXIT_DIFFERENT));
+            }
+        }
+        Commands::Search(args) => {
+            if !commands::search::run(&ctx, args)? {
+                return Ok(ExitCode::from(EXIT_NO_MATCH));
             }
         }
         Commands::Hashes { command } => commands::hashes::run(&ctx, command)?,
