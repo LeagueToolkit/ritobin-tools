@@ -2,13 +2,13 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 
-The LeagueToolkit command line tool for League of Legends `.bin` files. It converts between the binary format and ritobin text (`.rito`), shows the difference between two bins, saves that difference as a `PTCH` patch, and manages the hashtables that resolve hashes to names.
+The LeagueToolkit command line tool for League of Legends `.bin` files. It converts between the binary format and ritobin text (`.rito`), shows the difference between two bins, saves that difference as a `PTCH` patch, applies `PTCH` patches to a bin, and manages the hashtables that resolve hashes to names.
 
 ## Features
 
 - **Convert** `.bin` to `.rito` and back, for both `PROP` bins and `PTCH` patch bins
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
-- **Patch**: save a diff as a `PTCH` bin or as `PTCH` text
+- **Patch**: save a diff as a `PTCH` bin or as `PTCH` text, and apply `PTCH` files to a bin
 - **Search** bin files or every bin of the installed game for names, values and references
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
 - **Game-data declarations**: validate a manifest of bin edits, apply it to the installed game's bins, and print bin values as manifest YAML
@@ -191,6 +191,8 @@ ritobin-tools diff old.bin new.bin -f jsonl --exit-code > changes.jsonl
 ritobin-tools diff base.bin edited.bin --patch edited.ptch.bin
 ```
 
+[patch](#patch) applies the file to a bin.
+
 A patch contains a list of records, a list of whole objects and a delete list. Each record sets one property of one object. This format has the following limitations:
 
 - A record addresses its property by a path of field names, so the patch requires the hashtables. If a field has no known name, a record cannot address it, and the whole object is stored in the patch.
@@ -201,6 +203,81 @@ A patch contains a list of records, a list of whole objects and a delete list. E
 The tool logs a warning if a limitation affects the patch. The `json` format lists each affected location under `patch.lifted`. `patch.exact` is `true` if applying the patch to `BASE` produces exactly `EDITED`.
 
 The other formats and `--patch` require two `PROP` bins. If either input is a `PTCH` file, use the `unified` format.
+
+### patch
+
+Applies one or more `PTCH` files to a bin and writes the patched bin. `BASE` and each `PTCH` file can be a `.bin` file or a ritobin text file. [diff](#saving-a-diff-as-a-patch) writes a `PTCH` file.
+
+```bash
+ritobin-tools patch <BASE> <PATCHES>... [OPTIONS]
+```
+
+Common flags:
+
+- `-o, --output <FILE>`: write the patched bin to a file. `-` writes standard output
+- `--in-place`: overwrite `BASE` with the patched bin, in the format of `BASE`
+- `-n, --dry-run`: print the report only. Write no file
+- `--partial`: write the patched bin even if a record cannot be applied
+- `-t, --to <bin|rito>`: output format. Defaults to the format of the `-o` file extension, or to the format of `BASE`
+- `-f, --format <table|json>`: format of the report (default `table`)
+- `-k, --keep-hashed`, `--lenient`, and the text layout flags of `convert`
+
+The command requires one of `--output`, `--in-place` and `--dry-run`. `--output` cannot be the path of an input.
+
+Basic examples:
+
+```bash
+# Apply a patch and write the result to a new file
+ritobin-tools patch skin0.bin edited.ptch -o skin0.patched.bin
+
+# Apply several patches in order and overwrite the bin
+ritobin-tools patch skin0.bin first.ptch second.ptch --in-place
+
+# Check whether a patch still applies to a bin, for example after a game update
+ritobin-tools patch skin0.bin edited.ptch --dry-run
+
+# Print the patched bin as text
+ritobin-tools patch skin0.bin edited.ptch -o - --to rito
+```
+
+A `PTCH` file is applied in three steps, in the same order as in the game:
+
+1. The objects of its delete list are removed from the bin.
+2. Its whole objects are added to the bin. An object replaces the object of the bin that has the same path.
+3. Its records are applied in file order. Each record sets one property of one object.
+
+Several `PTCH` files are applied in argument order. Each one is applied to the result of the previous one. A `PTCH` file does not store dependencies, so the dependency list of `BASE` is unchanged.
+
+The command prints a report with one row per `PTCH` file:
+
+```
+PATCH        APPLIED  INSERTED  SKIPPED  DELETED  ADDED  REPLACED
+edited.ptch  3        1         0        0        1      0
+```
+
+| Column | Meaning |
+| --- | --- |
+| `APPLIED` | Number of records that were applied |
+| `INSERTED` | Number of applied records that added a missing property |
+| `SKIPPED` | Number of records that could not be applied |
+| `DELETED` | Number of objects that the delete list removed from the bin |
+| `ADDED` | Number of objects that were added to the bin |
+| `REPLACED` | Number of objects of the bin that were replaced |
+
+A record cannot be applied if the bin has no object with its path hash, if its property path does not resolve in the object, or if the value at the path has a different type. The report then has a second table with the position, the object, the path and the reason of each such record:
+
+```
+PATCH        RECORD  OBJECT                       PATH  REASON
+edited.ptch  0       Characters/Test/Skins/Skin0  Size  the bin has no object with this path hash
+```
+
+If a record cannot be applied, the command writes no file and exits with 1. The game skips such a record and applies the other records. `--partial` does the same: the command writes the patched bin without the values of the skipped records and exits with 0.
+
+The `json` report is one document with the fields `base`, `output`, `written` and `patches`. `written` is `true` if the run writes the patched bin. Each item of `patches` has the counts `applied` and `inserted`, the lists `deleted`, `added` and `replaced` of object path hashes, and the list `skipped`. A skipped record has the fields `record`, `object`, `object_name`, `path` and `reason`.
+
+The report is printed to standard output. With `-o -`, standard output contains the patched bin and the report is printed to standard error.
+
+The patched bin is encoded from the parsed `BASE`, so the comments of a text `BASE` are lost.
 
 ### search
 

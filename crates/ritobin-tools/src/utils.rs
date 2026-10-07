@@ -39,6 +39,19 @@ fn file_url(path: &Utf8Path) -> String {
     }
 }
 
+/// Returns a key that is equal for two paths to the same file: the absolute path with `/`
+/// separators, lowercased on Windows.
+pub fn same_file_key(path: &Utf8Path) -> String {
+    let absolute = std::path::absolute(path)
+        .map(|absolute| absolute.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string());
+    let key = absolute.replace('\\', "/");
+    match cfg!(windows) {
+        true => key.to_lowercase(),
+        false => key,
+    }
+}
+
 /// Formats `count` with a noun: `singular` if `count` is 1, otherwise `singular` with an `s`
 /// appended.
 pub fn plural(count: usize, singular: &str) -> String {
