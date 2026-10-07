@@ -10,6 +10,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 - **Format** ritobin text files in place, with comments kept
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text, and apply `PTCH` files to a bin
+- **Merge** partial bins into a base bin
 - **Search** bin files or every bin of the installed game for names, values and references
 - **Game bins**: extract bins of the installed game to files, and compare or patch a game bin with `game:<BIN>`
 - **Hashtables** from the shared [Mimir](https://github.com/LeagueToolkit/mimir) cache: sync, check, look up, search and export
@@ -315,6 +316,62 @@ The `json` report is one document with the fields `base`, `output`, `written` an
 The report is printed to standard output. With `-o -`, standard output contains the patched bin and the report is printed to standard error.
 
 The patched bin is encoded from the parsed `BASE`, so the comments of a text `BASE` are lost.
+
+### merge
+
+Merges one or more bins into a base bin and writes the merged bin. A value of an edit bin replaces the value of the base bin, and a value that only the base bin has is kept. Each input can be a `.bin` file, a ritobin text file or `game:<BIN>`.
+
+```bash
+ritobin-tools merge <BASE> <EDITS>... [OPTIONS]
+```
+
+```bash
+# Merge an edit into a bin and write the result to a new file
+ritobin-tools merge skin0.bin edit.rito -o merged.bin
+
+# Merge several edits in order. A later edit replaces the values of an earlier edit
+ritobin-tools merge skin0.bin first.bin second.bin --in-place
+
+# Merge an edit into the current game bin
+ritobin-tools merge game:data/characters/teemo/skins/skin0.bin edit.rito -o ./out/skin0.bin
+
+# Print the report only
+ritobin-tools merge skin0.bin edit.rito --dry-run
+```
+
+The output flags are those of [patch](#patch): one of `-o, --output <FILE>`, `--in-place` and `-n, --dry-run` is required, and `-t, --to`, `-f, --format`, `-k`, `--lenient` and the text layout flags are accepted.
+
+An edit bin can be a partial bin that has only the objects and the properties to change. The merge follows these rules:
+
+- An object that only the edit has is added.
+- An object of both bins with the same class is merged property by property. A property that only the edit has is added.
+- An object of both bins with different classes is replaced by the object of the edit.
+- A struct of both bins with the same class is merged property by property, at any depth.
+- A map of both bins is merged entry by entry. An entry with a new key is added.
+- Any other value, including a list, is replaced by the value of the edit.
+- A dependency that only the edit has is added to the dependency list.
+
+A merge cannot remove an object, a property, a map entry or a list item.
+
+The command prints a report with one row per edit bin:
+
+```
+EDIT       ADDED  MERGED  REPLACED  VALUES  INSERTED  KEYS  LINKS  MISMATCHED
+edit.rito  1      1       0         2       1         0     1      0
+```
+
+| Column | Meaning |
+| --- | --- |
+| `ADDED` | Number of objects that were added |
+| `MERGED` | Number of objects that were merged property by property |
+| `REPLACED` | Number of objects that were replaced, because the classes differ |
+| `VALUES` | Number of values that the edit replaced in merged objects |
+| `INSERTED` | Number of properties that the edit added to merged objects |
+| `KEYS` | Number of map entries that the edit added |
+| `LINKS` | Number of dependencies that were added |
+| `MISMATCHED` | Number of replaced values whose type differs from the type of the base value |
+
+A mismatched value is replaced like any other value. The report lists each of them in a second table and the command logs a warning, because the game ignores a value whose type differs from the type of its property. The `json` report has the same data, with the object lists as path hashes.
 
 ### search
 

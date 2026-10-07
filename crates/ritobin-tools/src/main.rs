@@ -79,6 +79,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Commands::Patch(args) => commands::patch::run(&ctx, args)?,
+        Commands::Merge(args) => commands::merge::run(&ctx, args)?,
         Commands::Search(args) => {
             if !commands::search::run(&ctx, args)? {
                 return Ok(ExitCode::from(EXIT_NO_MATCH));

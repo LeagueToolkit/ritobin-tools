@@ -19,6 +19,7 @@ use crate::{
         format::FormatArgs,
         gamedata::GameDataCommand,
         hashes::{HashesCommand, SyncArgs},
+        merge::MergeArgs,
         patch::PatchArgs,
         search::SearchArgs,
     },
@@ -93,6 +94,9 @@ pub enum Commands {
 
     /// Apply PTCH patches to a bin
     Patch(PatchArgs),
+
+    /// Merge bins into a base bin. A value of a later bin replaces the value of an earlier bin
+    Merge(MergeArgs),
 
     /// Search bin files or the bins of the game for names, values and references
     #[command(visible_alias = "grep")]
@@ -349,6 +353,7 @@ mod tests {
             "fmt",
             "diff",
             "patch",
+            "merge",
             "search",
             "grep",
             "hashes",

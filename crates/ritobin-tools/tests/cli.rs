@@ -565,6 +565,63 @@ fn patch_applies_saved_patch_and_exits_1_if_record_is_skipped() {
 }
 
 #[test]
+fn merge_writes_base_with_values_of_partial_edit() {
+    let ws = Workspace::new();
+    let tables = ws.field_table();
+    let base = ws.write("base.rito", BASE);
+    // The edit has one property of the object, and one dependency.
+    let edit = ws.write(
+        "edit.rito",
+        &BASE
+            .replace("\"shared.bin\"", "\"extra.bin\"")
+            .replace("        Size: f32 = 1\n", "")
+            .replace("        Tags: list[string] = { \"a\", \"b\" }\n", "")
+            .replace("\"base\"", "\"edited\""),
+    );
+
+    let merged = ws.path("merged.rito");
+    let output = ws
+        .tool()
+        .arg("merge")
+        .arg(&base)
+        .arg(&edit)
+        .arg("--output")
+        .arg(&merged)
+        .args(["--format", "json", "--hashtable"])
+        .arg(&tables)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["written"], true);
+    assert_eq!(report["edits"][0]["objects_merged"], 1);
+    assert_eq!(report["edits"][0]["values_replaced"], 1);
+    assert_eq!(
+        report["edits"][0]["dependencies_added"],
+        serde_json::json!(["extra.bin"])
+    );
+
+    let printed = read(&merged);
+    assert!(printed.contains("Size: f32 = 1"), "{printed}");
+    assert!(printed.contains("Name: string = \"edited\""), "{printed}");
+    assert!(
+        printed.contains("{ \"shared.bin\", \"extra.bin\" }"),
+        "{printed}"
+    );
+    assert_eq!(read(&base), BASE);
+
+    let output = ws
+        .tool()
+        .arg("merge")
+        .arg(&base)
+        .arg(&edit)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("No output was given"));
+}
+
+#[test]
 fn hashes_hash_prints_bin_hash() {
     let ws = Workspace::new();
     let output = ws
