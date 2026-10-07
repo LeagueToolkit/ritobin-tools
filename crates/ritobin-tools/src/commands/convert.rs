@@ -7,9 +7,13 @@ use walkdir::WalkDir;
 
 use crate::{
     cli::LayoutArgs,
+    commands::{
+        gamedata::GameArgs,
+        input::{Inputs, game_bin},
+    },
     context::Context,
     document::{
-        DEFAULT_TEXT_EXTENSION, Document, Format, ReadOptions, STDIO, TEXT_EXTENSIONS, TextLayout,
+        DEFAULT_TEXT_EXTENSION, Format, ReadOptions, STDIO, TEXT_EXTENSIONS, TextLayout,
         converted_path, detect_file, encode, reads_back, scanned_format, write_bytes,
     },
     hashes::BinHashes,
@@ -18,7 +22,9 @@ use crate::{
 
 #[derive(Args, Debug)]
 pub struct ConvertArgs {
-    /// Files or directories to convert. `-` reads standard input
+    /// Files or directories to convert. `-` reads standard input. `game:<BIN>` reads a bin
+    /// of the game, where `<BIN>` is a bin path, a chunk hash or an entry, as for
+    /// `gamedata extract`
     #[arg(value_name = "INPUTS")]
     pub inputs: Vec<Utf8PathBuf>,
 
@@ -66,6 +72,9 @@ pub struct ConvertArgs {
     pub no_verify: bool,
 
     #[command(flatten)]
+    pub game: GameArgs,
+
+    #[command(flatten)]
     pub layout: LayoutArgs,
 }
 
@@ -91,8 +100,9 @@ impl ConvertArgs {
 struct Job {
     input: Utf8PathBuf,
     output: Utf8PathBuf,
-    /// The output format. `None` for standard input without a requested format. The output
-    /// format is then the other format than the input, which is known after the input is read.
+    /// The output format. `None` for standard input or a game bin without a requested format.
+    /// The output format is then the other format than the input, which is known after the
+    /// input is read.
     to: Option<Format>,
 }
 
@@ -107,6 +117,13 @@ enum Outcome {
 pub fn run(ctx: &Context, args: ConvertArgs) -> Result<()> {
     let jobs = plan(&args)?;
     let layout = args.layout.over(ctx.config.print_config);
+    let inputs = Inputs::new(
+        ctx,
+        &args.game,
+        ReadOptions {
+            lenient: args.lenient,
+        },
+    );
     // The hashtables are loaded on first use. A run that only writes bins does not load them.
     let tables = OnceCell::new();
     let hashes = || {
@@ -117,12 +134,12 @@ pub fn run(ctx: &Context, args: ConvertArgs) -> Result<()> {
     };
 
     if let [job] = jobs.as_slice() {
-        return convert(job, &args, layout, &hashes).map(|_| ());
+        return convert(job, &args, &inputs, layout, &hashes).map(|_| ());
     }
 
     let (mut converted, mut skipped, mut failed) = (0, 0, 0);
     for job in &jobs {
-        match convert(job, &args, layout, &hashes) {
+        match convert(job, &args, &inputs, layout, &hashes) {
             Ok(Outcome::Converted) => converted += 1,
             Ok(Outcome::Skipped) => skipped += 1,
             Err(error) => {
@@ -167,6 +184,17 @@ fn plan(args: &ConvertArgs) -> Result<Vec<Job>> {
                 output: args.output.clone().unwrap_or_else(|| STDIO.into()),
                 to: args.asked_format(args.output.as_deref()),
             });
+        } else if game_bin(input).is_some() {
+            let Some(output) = &args.output else {
+                miette::bail!(
+                    "{input} is a bin of the game and has no default output path. Pass --output <FILE>, or `--output -` for standard output"
+                );
+            };
+            jobs.push(Job {
+                input: input.clone(),
+                output: output.clone(),
+                to: args.asked_format(Some(output)),
+            });
         } else if input.is_dir() {
             jobs.extend(scan(input, args)?);
         } else if input.exists() {
@@ -196,7 +224,7 @@ fn plan(args: &ConvertArgs) -> Result<Vec<Job>> {
 fn check_overwrites(jobs: &[Job]) -> Result<()> {
     let inputs: HashMap<String, &Utf8Path> = jobs
         .iter()
-        .filter(|job| job.input.as_str() != STDIO)
+        .filter(|job| job.input.as_str() != STDIO && game_bin(&job.input).is_none())
         .map(|job| (same_file_key(&job.input), job.input.as_path()))
         .collect();
     let mut outputs: HashMap<String, &Utf8Path> = HashMap::new();
@@ -307,6 +335,7 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
 fn convert<'h>(
     job: &Job,
     args: &ConvertArgs,
+    inputs: &Inputs,
     layout: TextLayout,
     hashes: &impl Fn() -> &'h BinHashes,
 ) -> Result<Outcome> {
@@ -320,12 +349,7 @@ fn convert<'h>(
         return Ok(Outcome::Skipped);
     }
 
-    let document = Document::read(
-        &job.input,
-        ReadOptions {
-            lenient: args.lenient,
-        },
-    )?;
+    let document = inputs.read(&job.input)?;
     let to = job.to.unwrap_or(document.format.opposite());
 
     let empty = BinHashes::none();
@@ -350,7 +374,10 @@ fn convert<'h>(
     if !to_stdout {
         tracing::info!(
             "Converted {} -> {}",
-            hyperlink_path(&job.input),
+            match game_bin(&job.input) {
+                Some(_) => job.input.to_string(),
+                None => hyperlink_path(&job.input),
+            },
             hyperlink_path(&job.output)
         );
     }
@@ -362,7 +389,7 @@ mod tests {
     use ltk_meta::{Bin, BinFile, BinObject, property::values};
 
     use super::*;
-    use crate::document::to_bin;
+    use crate::document::{Document, to_bin};
 
     fn args(inputs: &[&Utf8Path]) -> ConvertArgs {
         ConvertArgs {
@@ -377,6 +404,7 @@ mod tests {
             lenient: false,
             skip_existing: false,
             no_verify: false,
+            game: GameArgs::default(),
             layout: LayoutArgs::default(),
         }
     }
@@ -407,14 +435,78 @@ mod tests {
         let layout = TextLayout::default();
         let none = BinHashes::none();
         let hashes = || &none;
+        let ctx = Context::for_tests(None);
+        let inputs = Inputs::new(
+            &ctx,
+            &args.game,
+            ReadOptions {
+                lenient: args.lenient,
+            },
+        );
         for job in plan(&args)? {
-            convert(&job, &args, layout, &hashes)?;
+            convert(&job, &args, &inputs, layout, &hashes)?;
         }
         Ok(())
     }
 
     fn read(path: &Utf8Path) -> BinFile {
         Document::read(path, ReadOptions::default()).unwrap().file
+    }
+
+    #[test]
+    fn plan_requires_output_for_game_input() {
+        let input = Utf8Path::new("game:data/skin0.bin");
+
+        let error = plan(&args(&[input])).unwrap_err();
+        assert!(error.to_string().contains("has no default output path"));
+
+        let jobs = plan(&ConvertArgs {
+            output: Some("out/skin0.rito".into()),
+            ..args(&[input])
+        })
+        .unwrap();
+        assert_eq!(
+            jobs,
+            [Job {
+                input: input.to_owned(),
+                output: "out/skin0.rito".into(),
+                to: Some(Format::Rito),
+            }]
+        );
+
+        // Without a requested format, the output format is the other format than the game bin.
+        let jobs = plan(&ConvertArgs {
+            output: Some(STDIO.into()),
+            ..args(&[input])
+        })
+        .unwrap();
+        assert_eq!(jobs[0].to, None);
+    }
+
+    #[test]
+    fn convert_reads_game_bin_and_writes_other_format() {
+        use crate::game::testing::Installation;
+
+        let installation = Installation::new();
+        installation.archive(
+            "A.wad.client",
+            &[("data/skin0.bin", &to_bin(&sample()).unwrap())],
+        );
+        // The file extension is not a known format, so the output is the other format than the
+        // game bin.
+        let output = installation.root.join("out").join("skin0.txt");
+
+        run_with(ConvertArgs {
+            output: Some(output.clone()),
+            game: GameArgs {
+                game_dir: Some(installation.root.clone()),
+                index_dir: Some(installation.root.join("index")),
+            },
+            ..args(&[Utf8Path::new("game:data/skin0.bin")])
+        })
+        .unwrap();
+        assert!(std::fs::read(&output).unwrap().starts_with(b"#PROP_text"));
+        assert_eq!(read(&output), sample());
     }
 
     #[test]
