@@ -226,7 +226,7 @@ pub struct Matcher {
     /// `true` if the pattern is a regular expression. Numeric values are then matched by their
     /// text.
     regex: bool,
-    /// The object paths that match. Also tested for `link` values.
+    /// The object paths that match. Also tested for `hash` and `link` values.
     entries: HashSet<BinHash>,
     classes: HashSet<BinHash>,
     fields: HashSet<BinHash>,
@@ -315,7 +315,9 @@ impl Matcher {
 
         let value_kind =
             |kind: Kind| targets.value && (query.kinds.is_empty() || query.kinds.contains(&kind));
-        let links = value_kind(Kind::ObjectLink);
+        // A `hash` value and a `link` value are both printed with a name from the hash table
+        // or from the entry table, so both tables are read for either kind.
+        let hash_values = value_kind(Kind::Hash) || value_kind(Kind::ObjectLink);
         let wide_hashes: HashSet<u64> = match hex {
             Some(digits) if digits.len() > 8 && value_kind(Kind::Hash) => {
                 file_hashes.iter().map(|hash| hash.0).collect()
@@ -342,10 +344,10 @@ impl Matcher {
         // a search, and the tables are independent.
         let started = Instant::now();
         let (entries, classes, fields, hashes, files) = std::thread::scope(|scope| {
-            let entries = scope.spawn(|| names(Table::BinEntries, targets.entry || links));
+            let entries = scope.spawn(|| names(Table::BinEntries, targets.entry || hash_values));
             let classes = scope.spawn(|| names(Table::BinTypes, targets.class));
             let fields = scope.spawn(|| names(Table::BinFields, targets.field));
-            let hashes = scope.spawn(|| names(Table::BinHashes, value_kind(Kind::Hash) || links));
+            let hashes = scope.spawn(|| names(Table::BinHashes, hash_values));
             let files = file_paths();
             let join = |thread: std::thread::ScopedJoinHandle<'_, HashSet<BinHash>>| {
                 thread
@@ -414,7 +416,7 @@ impl Matcher {
         match leaf {
             Leaf::String(value) => text.is_match(value),
             Leaf::Hash(hash) => match hash.try_as_bin_hash() {
-                Some(hash) => self.hashes.contains(&hash),
+                Some(hash) => self.hashes.contains(&hash) || self.entries.contains(&hash),
                 None => self.wide_hashes.contains(&hash.as_u64()),
             },
             Leaf::Link(hash) => self.hashes.contains(hash) || self.entries.contains(hash),
@@ -1059,16 +1061,10 @@ fn leaf_text(leaf: &Leaf<'_>, names: &GameNames) -> String {
     match leaf {
         Leaf::String(value) => quote(value),
         Leaf::Hash(hash) => match hash.try_as_bin_hash() {
-            Some(hash) => named(names.bins.lookup(Table::BinHashes, hash), format_hash(hash)),
+            Some(hash) => named(names.bins.value_name(hash), format_hash(hash)),
             None => format!("0x{:016x}", hash.as_u64()),
         },
-        Leaf::Link(hash) => named(
-            names
-                .bins
-                .lookup(Table::BinHashes, *hash)
-                .or_else(|| names.bins.lookup(Table::BinEntries, *hash)),
-            format_hash(*hash),
-        ),
+        Leaf::Link(hash) => named(names.bins.value_name(*hash), format_hash(*hash)),
         Leaf::File(hash) => named(
             names.paths.path(*hash).map(Cow::Owned),
             format!("0x{:016x}", hash.0),
@@ -1367,6 +1363,30 @@ entries: map[hash,embed] = {
             rows[0].value,
             Some(format!("0x{:016x}", WadHash::hash_str(TEXTURE).0))
         );
+    }
+
+    #[test]
+    fn hash_value_matches_name_from_entry_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        std::fs::write(
+            path.join("hashes.binentries.txt"),
+            format!("{:08x} Hat_Feather1\n", BinHash::hash_str("Hat_Feather1").0),
+        )
+        .unwrap();
+        let names = GameNames {
+            bins: BinHashes::load(None, Some(&path)),
+            paths: WadPaths::default(),
+        };
+
+        let query = Query {
+            kinds: vec![Kind::Hash],
+            ..literal("feather")
+        };
+        let rows = rows(&query, &names);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value_type.as_deref(), Some("hash"));
+        assert_eq!(rows[0].value.as_deref(), Some("\"Hat_Feather1\""));
     }
 
     #[test]
