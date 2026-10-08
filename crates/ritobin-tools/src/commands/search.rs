@@ -30,7 +30,7 @@ use walkdir::WalkDir;
 use crate::{
     commands::gamedata::GameArgs,
     context::Context,
-    document::scanned_format,
+    document::{Format, scanned_format},
     hashes::{GameNames, WadPaths},
     package::{self, PackageKind, Visit},
     search::{self, Hit, Matched, Matcher, Pattern, Query, Row, Target},
@@ -563,7 +563,7 @@ pub fn file_jobs(paths: &[Utf8PathBuf], filter: Option<&str>) -> Result<Vec<Job>
                 };
                 if let Some(kind) = PackageKind::of(file) {
                     jobs.push(package(file, kind));
-                } else if scanned_format(file).is_some() {
+                } else if matches!(scanned_format(file), Some(Format::Bin | Format::Rito)) {
                     jobs.push(Job::File(file.to_owned()));
                 }
             }

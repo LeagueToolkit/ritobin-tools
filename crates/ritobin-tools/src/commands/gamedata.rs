@@ -1,4 +1,4 @@
-use std::cell::OnceCell;
+use std::{cell::OnceCell, collections::HashSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
@@ -16,13 +16,14 @@ use crate::{
         output::{OutputArgs, OutputFormat, columns},
     },
     context::Context,
+    declaration::DeclarationNames,
     document::{
         DEFAULT_TEXT_EXTENSION, Document, Format, ReadOptions, STDIO, converted_path, encode,
         reads_back, write_bytes,
     },
     game::{BinRef, Game},
     gamedata::{self, Changes, Layer, Outcome, Problem},
-    hashes::{BinHashes, GameNames, format_hash},
+    hashes::{BinHashes, format_hash},
     utils::{hyperlink_path, plural},
 };
 
@@ -239,8 +240,8 @@ fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
     let outcome = gamedata::apply(&layer, &game)?;
 
     let layout = args.layout.over(ctx.config.print_config);
-    let hashes = match (args.to, args.keep_hashed) {
-        (Format::Rito, false) => ctx.hashes(),
+    let hashes = match (args.to.is_text(), args.keep_hashed) {
+        (true, false) => ctx.hashes(),
         _ => BinHashes::none(),
     };
     for bin in outcome.bins.iter().filter(|bin| bin.changes.any()) {
@@ -251,18 +252,14 @@ fn apply(ctx: &Context, args: &ApplyArgs) -> Result<bool> {
             .fold(args.output.clone(), |path, part| path.join(part));
         let path = match args.to {
             Format::Bin => path,
-            Format::Rito => converted_path(
-                &path,
-                Format::Rito,
-                args.text_extension.trim_start_matches('.'),
-            ),
+            to => converted_path(&path, to, args.text_extension.trim_start_matches('.')),
         };
         let data = match args.to {
             Format::Bin => bin.bytes.clone(),
-            Format::Rito => {
+            to => {
                 let document =
                     Document::parse(&bin.target, bin.bytes.clone(), ReadOptions::default())?;
-                encode(&document.file, Format::Rito, layout, &hashes)
+                encode(&document.file, to, layout, &hashes)
                     .wrap_err_with(|| format!("Failed to print {}", bin.target))?
             }
         };
@@ -284,6 +281,28 @@ const MAX_FILE_NAME: usize = 240;
 /// Returns the text after the last `/` of `path`.
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Returns the path of `<chunk hash>.bin` in the directory of `path`, with `/` separators.
+fn beside(path: &Utf8Path, chunk: WadHash) -> Utf8PathBuf {
+    let directory = &path.as_str()[..path.as_str().len() - file_name(path.as_str()).len()];
+    format!("{directory}{:016x}.bin", chunk.0).into()
+}
+
+/// Returns every directory of `paths`, lowercased, with `/` separators and no trailing `/`.
+/// `paths` have `/` separators.
+fn directories(paths: &[Utf8PathBuf]) -> HashSet<String> {
+    let mut directories = HashSet::new();
+    for path in paths {
+        let mut rest = path.as_str();
+        while let Some((directory, _)) = rest.rsplit_once('/') {
+            if !directories.insert(directory.to_lowercase()) {
+                break;
+            }
+            rest = directory;
+        }
+    }
+    directories
 }
 
 /// Returns the output path of the bin `chunk`, relative to the output directory, with `/`
@@ -311,9 +330,8 @@ fn output_name(target: &str, chunk: WadHash, game: &Game) -> Utf8PathBuf {
     else {
         return format!("{hash_name}.bin").into();
     };
-    let file = file_name(name);
-    match file.len() > MAX_FILE_NAME {
-        true => format!("{}{hash_name}.bin", &name[..name.len() - file.len()]).into(),
+    match file_name(name).len() > MAX_FILE_NAME {
+        true => beside(Utf8Path::new(name), chunk),
         false => name.into(),
     }
 }
@@ -546,11 +564,12 @@ fn extract(ctx: &Context, args: &ExtractArgs) -> Result<()> {
         }
         let data = match to {
             Format::Bin => data,
-            Format::Rito => {
+            to => {
                 let document = Document::parse(&bin.name, data, ReadOptions::default())?;
-                let text = encode(&document.file, Format::Rito, layout, hashes())
+                let text = encode(&document.file, to, layout, hashes())
                     .wrap_err_with(|| format!("Failed to print {}", bin.name))?;
-                if !args.no_verify
+                if to == Format::Rito
+                    && !args.no_verify
                     && !std::str::from_utf8(&text)
                         .is_ok_and(|text| reads_back(&document.file, text))
                 {
@@ -602,15 +621,26 @@ fn extract(ctx: &Context, args: &ExtractArgs) -> Result<()> {
         return Ok(());
     };
     let to = args.to.unwrap_or(Format::Bin);
+    let names: Vec<Utf8PathBuf> = bins
+        .iter()
+        .map(|bin| output_name(&bin.name, bin.chunk, &game))
+        .collect();
+    let directories = directories(&names);
     let (mut extracted, mut skipped, mut failed, mut renamed) = (0, 0, 0, 0);
-    for bin in &bins {
-        let name = output_name(&bin.name, bin.chunk, &game);
-        if file_name(&bin.name).len() > MAX_FILE_NAME
-            && file_name(name.as_str()) != file_name(&bin.name)
-        {
+    for (bin, name) in bins.iter().zip(names) {
+        // The game has bins whose path is also the directory of other bins, for example
+        // `loadouts/companions` and `loadouts/companions/pets.bin`. A file system cannot hold
+        // a file and a directory under one name.
+        let name = match directories.contains(&name.as_str().to_lowercase()) {
+            true => beside(&name, bin.chunk),
+            false => name,
+        };
+        // A bin without a known path is named by its chunk hash. It has no game path.
+        let has_path = bin.name != format!("{:016x}", bin.chunk.0);
+        if has_path && file_name(name.as_str()) != file_name(&bin.name) {
             renamed += 1;
             tracing::debug!(
-                "The file name of {} is too long for a file. The bin is written as {name}",
+                "The game path of {} cannot be a file path. The bin is written as {name}",
                 bin.name
             );
         }
@@ -621,11 +651,7 @@ fn extract(ctx: &Context, args: &ExtractArgs) -> Result<()> {
             .fold(dir.clone(), |path, part| path.join(part));
         let path = match to {
             Format::Bin => path,
-            Format::Rito => converted_path(
-                &path,
-                Format::Rito,
-                args.text_extension.trim_start_matches('.'),
-            ),
+            to => converted_path(&path, to, args.text_extension.trim_start_matches('.')),
         };
         if args.skip_existing && path.exists() {
             tracing::debug!("Skipped {}: {path} already exists", bin.name);
@@ -646,7 +672,7 @@ fn extract(ctx: &Context, args: &ExtractArgs) -> Result<()> {
 
     if renamed > 0 {
         tracing::info!(
-            "{} a file name that is too long for a file. Each of them is written under its chunk hash in the directory of its game path. Pass `-L debug` to list them.",
+            "{} a game path that cannot be a file path: the file name is too long, or the path is also a directory of other bins. Each of them is written under its chunk hash in the directory of its game path. Pass `-L debug` to list them.",
             match renamed {
                 1 => "1 bin has".to_owned(),
                 renamed => format!("{renamed} bins have"),
@@ -697,10 +723,11 @@ fn render(ctx: &Context, args: &RenderArgs) -> Result<()> {
         }
     };
 
-    let names = match args.keep_hashed {
-        true => GameNames::default(),
-        false => ctx.game_names(),
+    let hashes = match args.keep_hashed {
+        true => BinHashes::none(),
+        false => ctx.hashes(),
     };
+    let names = DeclarationNames(&hashes);
     let value = match &path {
         Some(path) => {
             let value = object.resolve(path).map_err(|error| {
@@ -732,7 +759,7 @@ fn object_of(path: &Utf8Path, hash: BinHash) -> Result<Option<BinObject>> {
 
 /// Renders `object` as a manifest entry body: a mapping from each property name to its rendered
 /// value. A property with no known name uses its hash as the key.
-fn entry_body(object: &BinObject, names: &GameNames) -> Result<Value, ltk_game_data::Error> {
+fn entry_body(object: &BinObject, names: &DeclarationNames) -> Result<Value, ltk_game_data::Error> {
     let mut body = IndexMap::new();
     for (field, value) in &object.properties {
         let key = match names.field(*field, Some(object.class_hash)) {
@@ -987,6 +1014,28 @@ mod tests {
     }
 
     #[test]
+    fn directories_lists_every_directory_of_paths_in_lower_case() {
+        // `a/b` is a bin and also the directory of `a/b/c.bin`.
+        let paths: Vec<Utf8PathBuf> = ["a/b", "a/b/c.bin", "A/B/d/e.bin", "f.bin"]
+            .map(Utf8PathBuf::from)
+            .into();
+        let directories = directories(&paths);
+        let mut found: Vec<&str> = directories.iter().map(String::as_str).collect();
+        found.sort();
+        assert_eq!(found, ["a", "a/b", "a/b/d"]);
+
+        assert!(directories.contains("a/b"));
+        assert_eq!(
+            beside(Utf8Path::new("a/b"), WadHash(0xff)),
+            "a/00000000000000ff.bin"
+        );
+        assert_eq!(
+            beside(Utf8Path::new("f.bin"), WadHash(0xff)),
+            "00000000000000ff.bin"
+        );
+    }
+
+    #[test]
     fn extract_skips_existing_file_with_skip_existing() {
         let installation = Installation::new();
         installation.archive("A.wad.client", &[("data/skin0.bin", &bin())]);
@@ -1013,7 +1062,7 @@ mod tests {
             panic!("not a PROP bin");
         };
         let object = &bin.objects[&BinHash(0x1111_0001)];
-        let body = entry_body(object, &GameNames::default()).unwrap();
+        let body = entry_body(object, &DeclarationNames(&BinHashes::none())).unwrap();
         assert_eq!(
             body.to_yaml().unwrap(),
             "\"0x00000010\": 42\n\"0x00000011\": teemo"

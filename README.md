@@ -7,6 +7,7 @@ The LeagueToolkit command line tool for League of Legends `.bin` files. It conve
 ## Features
 
 - **Convert** `.bin` to `.rito` and back, for both `PROP` bins and `PTCH` patch bins
+- **YAML and JSON**: write a bin without types as YAML that builds back into a bin, or as JSON for scripts
 - **Format** ritobin text files in place, with comments kept
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
 - **Patch**: save a diff as a `PTCH` bin or as `PTCH` text, and apply `PTCH` files to a bin
@@ -85,15 +86,15 @@ Log messages are written to standard error. Standard output contains only the ou
 
 ### convert
 
-Converts between binary `.bin` and ritobin text. The input format is detected from the file content. The file extension is not used. Both kinds of bin are supported: a `PROP` bin contains objects, and a `PTCH` bin contains a patch for another bin.
+Converts between binary `.bin` and ritobin text, and to the [YAML and JSON](#yaml-and-json) forms. The input format is detected from the file content. The file extension is used only to recognize YAML. Both kinds of bin are supported: a `PROP` bin contains objects, and a `PTCH` bin contains a patch for another bin.
 
 Common flags:
 
 - `[INPUTS]...` or `-i, --input <PATH>...`: files or directories. `-` reads standard input. `game:<BIN>` reads a bin of the installed game, see [Game bins as inputs](#game-bins-as-inputs)
 - `-o, --output <PATH>`: a file for a file input, a directory for a directory input, or `-` for standard output. Requires exactly one input
 - `-r, --recursive`: include the subdirectories of a directory input
-- `-t, --to <bin|rito>`: output format. Defaults to the format of the output file extension, or to the other format than the input
-- `--from <bin|rito>`: input format that a directory input is scanned for. Defaults to the other format than `--to`, or to `bin`
+- `-t, --to <bin|rito|yaml|json>`: output format. Defaults to the format of the output file extension. Without one, a binary bin is converted to ritobin text and every other input to a binary bin
+- `--from <bin|rito|yaml>`: input format that a directory input is scanned for. Defaults to `bin` if `--to` is a text format, and to `rito` if `--to` is `bin`
 - `--ext <EXT>`: file extension for text output (default `rito`)
 - `-k, --keep-hashed`: write hashes as hex
 - `--lenient`: convert text that has problems. The invalid parts are skipped
@@ -126,7 +127,80 @@ Text is validated before it is converted. A syntax error or a type error fails t
 
 Text printed from a bin is verified: the tool parses the text again and compares the result with the bin. It logs a warning if they differ. The text printer does not print a few values exactly, for example a string with a leading or trailing space. `--no-verify` skips the verification.
 
+A `hash` value occupies 4 or 8 bytes in a bin. The PBE build of patch 16.21 stores `StaticMaterialDef.name` in 8 bytes. An 8-byte hash is read from a bin and printed as `0x` and 16 hex digits. No hashtable has names for 8-byte hashes. The text parser does not read that literal as a `hash`, so text that has an 8-byte hash does not convert back to a bin. `convert` logs the warning above for such a bin. YAML writes an 8-byte hash as the same literal, and the literal builds back to an 8-byte hash if the installed game declares the property as a `hash`. `search` matches an 8-byte hash by its `0x` literal.
+
 A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.rito` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
+
+#### YAML and JSON
+
+`--to yaml` writes a bin as a game-data declaration, and `--to json` writes it as JSON for scripts. Both write each value without its type, so they are shorter and easier to read than ritobin text.
+
+```bash
+# Write a bin as YAML, edit it, and build it back into a bin
+ritobin-tools convert skin0.bin -o skin0.yaml
+ritobin-tools convert skin0.yaml -o skin0.bin
+
+# Write a bin as JSON for a script
+ritobin-tools convert skin0.bin -o skin0.json
+ritobin-tools convert game:data/characters/teemo/skins/skin0.bin --to json -o - | jq '.objects[]."~class"'
+```
+
+```yaml
+# ritobin-tools bin declaration
+links: [DATA/Characters/Teemo/Teemo.bin]
+objects:
+  Characters/Teemo/Skins/Skin0:
+    class: SkinCharacterDataProperties
+    set:
+      championSkinId: 17000
+      skinMeshProperties: !embed(SkinMeshDataProperties)
+        simpleSkin: ASSETS/Characters/Teemo/Skins/Base/Teemo_Base.skn
+        texture: assets/characters/teemo/skins/base/teemo_base_tx_cm.tex
+        selfIllumination: 0.7
+        materialOverride:
+        - !embed(SkinMeshDataProperties_MaterialOverride)
+          submesh: Mushroom
+      animationGraphData: Characters/Teemo/Animations/Skin0
+```
+
+The YAML is the body of a [game-data](#gamedata) edit: `links` is the dependency list, and each object under `objects` has its `class` and its properties under `set`. A value is written as follows:
+
+| Type | Written as |
+| --- | --- |
+| A number, a boolean, a string | The value |
+| `hash`, `link`, `file` | The name as a string, or `0x` hex if no hashtable has the name |
+| `vec2`, `vec3`, `vec4`, `mtx44`, `rgba` | A list of numbers |
+| `list`, `list2` | A list |
+| `map` | A mapping |
+| `option` | The value, or `null` if the option is empty. A value that is itself a list, such as a `vec3`, is written as a list with that one item |
+| `embed`, `pointer` | The properties under a `!embed(<class>)` or `!pointer(<class>)` tag. A null pointer is `null` |
+
+**Building the YAML back into a bin requires the installed game.** The YAML has no types. The tool takes the type of each property from the class schema, which it reads from the bins of the game. Pass `--game-dir` or set `game_dir` in the config. The first run after a game patch reads every bin of the game, which takes a few seconds, and caches the schema with the game index.
+
+- A file is read as YAML if its extension is `.yaml` or `.yml`. `convert`, `diff`, `patch` and `merge` accept such a file as an input. Standard input is not read as YAML.
+- A class or a property that no game bin uses has no known type. A YAML file that has one fails to build, and the error names the object and the property. Use ritobin text for such a bin.
+- The types are those of the installed game version. If a property has another type in the game version of a bin, the YAML of that bin builds with the type of the installed game. For example, `StaticMaterialDef.name` is a `string` in patch 16.20 and a `hash` in the PBE build of patch 16.21.
+- A bin with a map that has the same key twice cannot be written as YAML or JSON. 40 of the 40,858 bins of the game have such a map. Use ritobin text for them.
+- A `PTCH` file cannot be written as YAML or JSON.
+- After `convert` writes YAML, it builds the YAML back into a bin and compares it with the input, if a game directory is set. It logs a warning if they differ. `--no-verify` skips the verification.
+
+JSON is an output format. It cannot be read back. It has `links` and `objects` like the YAML. An object or a struct is a JSON object with the property names as keys and the class under `"~class"`:
+
+```json
+{
+  "links": ["DATA/Characters/Teemo/Teemo.bin"],
+  "objects": {
+    "Characters/Teemo/Skins/Skin0": {
+      "~class": "SkinCharacterDataProperties",
+      "championSkinId": 17000,
+      "skinMeshProperties": {
+        "~class": "SkinMeshDataProperties",
+        "selfIllumination": 0.7
+      }
+    }
+  }
+}
+```
 
 ### format
 
@@ -272,7 +346,7 @@ Common flags:
 - `--in-place`: overwrite `BASE` with the patched bin, in the format of `BASE`
 - `-n, --dry-run`: print the report only. Write no file
 - `--partial`: write the patched bin even if a record cannot be applied
-- `-t, --to <bin|rito>`: output format. Defaults to the format of the `-o` file extension, or to the format of `BASE`
+- `-t, --to <bin|rito|yaml|json>`: output format. Defaults to the format of the `-o` file extension, or to the format of `BASE`
 - `-f, --format <table|json>`: format of the report (default `table`)
 - `-k, --keep-hashed`, `--lenient`, and the text layout flags of `convert`
 
@@ -621,7 +695,7 @@ Common flags:
 - `--game-dir <DIR>`: path to the `Game` directory of an installation, or to its parent directory. Defaults to `game_dir` from the config
 - `--index-dir <DIR>`: directory for the game index cache. Defaults to a directory under the user data directory
 - `-f, --format <table|json>` on `check` and `apply`: format of the report
-- `-o, --output <DIR>`, `-t, --to <bin|rito>`, `--ext`, `-k` and the text layout flags on `apply`
+- `-o, --output <DIR>`, `-t, --to <bin|rito|yaml|json>`, `--ext`, `-k` and the text layout flags on `apply`
 
 How a manifest is applied:
 
@@ -677,7 +751,7 @@ Flags:
 - `--bin <TEXT>`: also select the bins whose path contains the text. With `--wad`, a bin must pass both filters
 - `-o, --output <FILE>`: write one bin to a file. `-` writes standard output. The command fails if more than one bin is selected
 - `-d, --output-dir <DIR>`: write each bin at its game path under a directory
-- `-t, --to <bin|rito>`: output format. Defaults to the format of the `-o` file extension, or to `bin`
+- `-t, --to <bin|rito|yaml|json>`: output format. Defaults to the format of the `-o` file extension, or to `bin`
 - `--skip-existing`: do not overwrite an existing output file
 - `--ext`, `-k`, `--no-verify` and the text layout flags of `convert`
 
@@ -685,12 +759,13 @@ The command requires `--output` or `--output-dir`. A binary output file has exac
 
 `--wad`, `--bin` and an entry use the object index, so they do not select a bin that declares no object. `--bin` requires the `game` hashtable, because a bin without a known path is named by its chunk hash.
 
-Under `--output-dir`, two kinds of bin are not written at their game path:
+Under `--output-dir`, three kinds of bin are not written at their game path:
 
 - A bin without a known path is written as `<chunk hash>.bin` in the output directory.
-- A bin whose file name is longer than 240 bytes is written as `<chunk hash>.bin` in the directory of its game path, because file systems limit a file name to 255 bytes. The game has such bins, for example the bins that contain the shared objects of many skins of one champion. The command logs the number of these bins, and `-L debug` lists them.
+- A bin whose file name is longer than 240 bytes is written as `<chunk hash>.bin` in the directory of its game path, because file systems limit a file name to 255 bytes. The game has such bins, for example the bins that contain the shared objects of many skins of one champion.
+- A bin whose game path is also the directory of other selected bins is written as `<chunk hash>.bin` in the directory of its game path, because a file and a directory cannot have the same name. The game has such bins, for example `loadouts/companions` and the bins under `loadouts/companions/`.
 
-Text output uses the text extension in place of `.bin` in both cases.
+The command logs the number of bins of the last two kinds, and `-L debug` lists them. Text output uses the text extension in place of `.bin` in all three cases.
 
 With `--output-dir`, a bin that cannot be read or printed does not stop the run. The command then exits with 1 after the last bin.
 

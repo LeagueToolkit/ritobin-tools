@@ -176,9 +176,9 @@ pub fn run(ctx: &Context, args: PatchArgs) -> Result<()> {
         format,
         bin,
         args.layout.over(ctx.config.print_config),
-        match format {
-            Format::Rito => hashes(),
-            Format::Bin => &no_hashes,
+        match format.is_text() {
+            true => hashes(),
+            false => &no_hashes,
         },
         "patched bin",
     )
