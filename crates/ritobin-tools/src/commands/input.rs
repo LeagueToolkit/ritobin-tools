@@ -241,9 +241,18 @@ mod tests {
         let (ctx, args) = (Context::for_tests(None), GameArgs::default());
         let inputs = Inputs::new(&ctx, &args, ReadOptions::default());
         assert!(inputs.schema().is_none());
-        let error = format!("{:?}", inputs.read(&path).unwrap_err());
-        assert!(error.contains("requires the class schema"), "{error}");
-        assert!(error.contains("No game directory is set"), "{error}");
+        // The messages of the error and of its cause. The rendered report is not compared,
+        // because its line breaks depend on the length of the path.
+        let error = inputs.read(&path).unwrap_err();
+        let messages: Vec<String> = error.chain().map(ToString::to_string).collect();
+        assert!(
+            messages[0].contains("requires the class schema"),
+            "{messages:?}"
+        );
+        assert!(
+            messages[1].contains("No game directory is set"),
+            "{messages:?}"
+        );
     }
 
     #[test]
