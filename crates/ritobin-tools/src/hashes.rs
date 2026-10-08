@@ -171,6 +171,13 @@ impl BinHashes {
                 .map(|name| Cow::Owned(name.into_owned()))
         })
     }
+
+    /// Returns the name of a `hash` or `link` value. The hash table is checked first, then the
+    /// entry table, because the name of a link target is in the entry table.
+    pub fn value_name(&self, hash: BinHash) -> Option<Cow<'_, str>> {
+        self.lookup(Table::BinHashes, hash)
+            .or_else(|| self.lookup(Table::BinEntries, hash))
+    }
 }
 
 impl HashProvider for BinHashes {
@@ -182,8 +189,10 @@ impl HashProvider for BinHashes {
         self.lookup(Table::BinFields, hash)
     }
 
+    /// Returns the name of a `hash` or `link` value. The printer of `ltk_ritobin` calls this
+    /// function for both value types.
     fn lookup_hash(&self, hash: BinHash) -> Option<Cow<'_, str>> {
-        self.lookup(Table::BinHashes, hash)
+        self.value_name(hash)
     }
 
     fn lookup_type(&self, hash: BinHash) -> Option<Cow<'_, str>> {
@@ -330,6 +339,37 @@ mod tests {
         );
         assert_eq!(hashes.lookup_wad(WadHash(1)), None);
         assert_eq!(BinHashes::none().lookup_wad(hash), None);
+    }
+
+    #[test]
+    fn value_name_falls_back_to_entry_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(dir.path()).unwrap();
+        let entry = BinHash(0x58a7_d43d);
+        let both = BinHash(0xb19f_b4b4);
+        std::fs::write(
+            dir.join("hashes.binentries.txt"),
+            format!(
+                "{:08x} Characters/Rengar/CAC/Rengar_Base\n{:08x} entry table\n",
+                entry.0, both.0
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("hashes.binhashes.txt"),
+            format!("{:08x} hash table\n", both.0),
+        )
+        .unwrap();
+
+        let hashes = BinHashes::load(None, Some(dir));
+        assert_eq!(
+            hashes.value_name(entry).as_deref(),
+            Some("Characters/Rengar/CAC/Rengar_Base")
+        );
+        assert_eq!(hashes.lookup_hash(entry), hashes.value_name(entry));
+        assert_eq!(hashes.value_name(both).as_deref(), Some("hash table"));
+        assert_eq!(hashes.lookup(Table::BinHashes, entry), None);
+        assert_eq!(hashes.value_name(BinHash(1)), None);
     }
 
     #[test]

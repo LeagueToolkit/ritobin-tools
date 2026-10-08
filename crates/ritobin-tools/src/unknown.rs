@@ -61,14 +61,13 @@ impl HashTable {
         }
     }
 
-    /// Returns `true` if `names` has a name for `hash`. A link value has a name if the entry
-    /// table or the hash table has one, because a link is printed with either.
+    /// Returns `true` if `names` has a name for `hash`. A `link` value or a `hash` value has a
+    /// name if the entry table or the hash table has one, because both are printed with either.
     fn is_known(self, hash: u64, names: &GameNames) -> bool {
         let bin = |table| names.bins.lookup(table, BinHash(hash as u32)).is_some();
         match self {
-            Self::Entries => bin(Table::BinEntries) || bin(Table::BinHashes),
+            Self::Entries | Self::Hashes => names.bins.value_name(BinHash(hash as u32)).is_some(),
             Self::Fields => bin(Table::BinFields),
-            Self::Hashes => bin(Table::BinHashes),
             Self::Types => bin(Table::BinTypes),
             Self::Game => names.paths.path(ltk_hash::WadHash(hash)).is_some(),
         }

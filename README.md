@@ -645,7 +645,7 @@ fields   0x0a3e0478  18676   1177   data/characters/aatrox/aatrox.bin: Character
 
 `COUNT` is the number of occurrences and `BINS` is the number of bins that contain the hash. `EXAMPLE` is one occurrence: the bin, the object and the path of the value. The `json` format has these as the fields `source`, `archive`, `object`, `object_name` and `path`.
 
-The tables of the list differ from the hashtables in two points. The value of a `link` property is listed under `entries`, and it has a name if the `entries` table or the `hashes` table has one. `game` lists the values of `file` properties, as 16 hex digits.
+The tables of the list differ from the hashtables in three points. The value of a `link` property is listed under `entries`. The value of a `hash` or `link` property has a name if the `hashes` table or the `entries` table has one. `game` lists the values of `file` properties, as 16 hex digits.
 
 The property names in the records of a `PTCH` file are stored as text, so the command reads only the objects of a `PTCH` file. A name that is written in a ritobin text file is listed if no hashtable has it.
 
@@ -885,7 +885,7 @@ The cache directory is selected in this order:
 
 The tool works without installed tables. It logs a warning and prints hashes as hex.
 
-The four bin tables resolve entry paths, class names, property names and the values of `hash` and `link` properties. The `game` table resolves the paths of `file` values and of game chunks. Printed text therefore has `texture: file = "assets/characters/teemo/skins/base/teemo_base_tx_cm.tex"` if the table has the path, and `texture: file = 0x56e8cbde20856ea` if it does not.
+The four bin tables resolve entry paths, class names, property names and the values of `hash` and `link` properties. The value of a `hash` or `link` property is resolved with the `hashes` table first, then with the `entries` table. The `game` table resolves the paths of `file` values and of game chunks. Printed text therefore has `texture: file = "assets/characters/teemo/skins/base/teemo_base_tx_cm.tex"` if the table has the path, and `texture: file = 0x56e8cbde20856ea` if it does not.
 
 To add your own names, put CDragon text tables in a directory and pass the directory with `-H, --hashtable <DIR>`. The file names are `hashes.binentries.txt`, `hashes.binfields.txt`, `hashes.binhashes.txt` and `hashes.bintypes.txt`, and `hashes.game.txt` for the paths of `file` values. Each file has one `<hex hash> <name>` per line. A name from these files takes precedence over the cache.
 
