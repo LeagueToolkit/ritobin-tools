@@ -1045,7 +1045,7 @@ fn convert_writes_yaml_that_builds_back_to_the_same_bin_and_json_for_scripts() {
     assert_eq!(
         read(&yaml),
         format!(
-            "# ritobin-tools bin declaration\nlinks: [shared.bin]\nobjects:\n  \"0x{entry:08x}\":\n    class: \"0x{class:08x}\"\n    set:\n      Size: 1.0\n      Name: base\n      Tags: [a, b]\n"
+            "# ritobin-tools bin declaration\nlinks: [shared.bin]\nobjects:\n  \"0x{entry:08x}\": !0x{class:08x}\n    Size: 1.0\n    Name: base\n    Tags: [a, b]\n"
         )
     );
 

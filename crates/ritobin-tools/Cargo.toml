@@ -38,7 +38,7 @@ ltk_hash = "0.5"
 
 ltk_mimir_cache = { version = "0.1", features = ["ureq"] }
 
-ltk_game_data = "0.9"
+ltk_game_data = "0.9.1"
 ltk_game_index = { version = "0.1.5", features = ["objects"] }
 ltk_wad = "0.5.9"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
