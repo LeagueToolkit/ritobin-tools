@@ -177,6 +177,7 @@ The YAML is the body of a [game-data](#gamedata) edit: `links` is the dependency
 
 - A file is read as YAML if its extension is `.yaml` or `.yml`. `convert`, `diff`, `patch` and `merge` accept such a file as an input. Standard input is not read as YAML.
 - A class or a property that no game bin uses has no known type. A YAML file that has one fails to build, and the error names the object and the property. Use ritobin text for such a bin.
+- The types are those of the installed game version. If a property has another type in the game version of a bin, the YAML of that bin builds with the type of the installed game. For example, `StaticMaterialDef.name` is a `string` in patch 16.20 and a `hash` in the PBE build of patch 16.21.
 - A bin with a map that has the same key twice cannot be written as YAML or JSON. 40 of the 40,858 bins of the game have such a map. Use ritobin text for them.
 - A `PTCH` file cannot be written as YAML or JSON.
 - After `convert` writes YAML, it builds the YAML back into a bin and compares it with the input, if a game directory is set. It logs a warning if they differ. `--no-verify` skips the verification.
