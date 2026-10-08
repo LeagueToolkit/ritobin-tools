@@ -245,7 +245,8 @@ impl<'n> Collector<'n> {
     }
 
     /// Counts the hash of `leaf` if `leaf` is a hash, a link or a file path. `path` builds the
-    /// path of the value, and is called only if an example is stored.
+    /// path of the value, and is called only if an example is stored. An 8-byte hash is not
+    /// counted, because no hashtable stores names for 8-byte hashes.
     fn leaf(
         &mut self,
         leaf: &Leaf<'_>,
@@ -253,7 +254,10 @@ impl<'n> Collector<'n> {
         path: impl FnOnce() -> Result<ValuePath, BinError>,
     ) -> Result<(), BinError> {
         let (table, hash) = match leaf {
-            Leaf::Hash(hash) => (HashTable::Hashes, u64::from(hash.0)),
+            Leaf::Hash(hash) => match hash.try_as_u32() {
+                Some(hash) => (HashTable::Hashes, u64::from(hash)),
+                None => return Ok(()),
+            },
             Leaf::Link(hash) => (HashTable::Entries, u64::from(hash.0)),
             Leaf::File(hash) => (HashTable::Game, hash.0),
             _ => return Ok(()),

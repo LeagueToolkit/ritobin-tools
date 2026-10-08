@@ -408,7 +408,7 @@ fn convert<'h>(
         && !std::str::from_utf8(&data).is_ok_and(|text| reads_back(&document.file, text))
     {
         tracing::warn!(
-            "The text printed for {} does not parse back to the same bin. The printer does not print every value exactly. Known cases are a string with a leading or trailing space, and a NaN or infinite number. Run `ritobin-tools diff -f summary` on the bin and the text to list the differences.",
+            "The text printed for {} does not parse back to the same bin. The printer does not print every value exactly. Known cases are a string with a leading or trailing space, a NaN or infinite number, and a `hash` value of 8 bytes, which the text parser rejects. Run `ritobin-tools diff -f summary` on the bin and the text to list the differences.",
             job.input
         );
     }

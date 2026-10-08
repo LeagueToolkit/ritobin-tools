@@ -232,6 +232,9 @@ pub struct Matcher {
     fields: HashSet<BinHash>,
     /// The hashes that match `hash` and `link` values.
     hashes: HashSet<BinHash>,
+    /// The 8-byte values that match `hash` values. No hashtable has names for 8-byte
+    /// hashes, so only a `0x` literal of more than 8 digits matches one.
+    wide_hashes: HashSet<u64>,
     /// The chunk hashes that match `file` values.
     files: HashSet<WadHash>,
     targets: Targets,
@@ -270,7 +273,8 @@ impl Matcher {
         let (mut bin_hashes, mut file_hashes) = (Vec::new(), Vec::new());
         if let Some(literal) = literal {
             match hex {
-                // Up to 8 digits are a bin hash. More digits are a chunk hash.
+                // Up to 8 digits are a bin hash. More digits are a chunk hash or an 8-byte
+                // `hash` value.
                 Some(digits) if digits.len() <= 8 => {
                     bin_hashes.extend(u32::from_str_radix(digits, 16).map(BinHash));
                 }
@@ -312,6 +316,12 @@ impl Matcher {
         let value_kind =
             |kind: Kind| targets.value && (query.kinds.is_empty() || query.kinds.contains(&kind));
         let links = value_kind(Kind::ObjectLink);
+        let wide_hashes: HashSet<u64> = match hex {
+            Some(digits) if digits.len() > 8 && value_kind(Kind::Hash) => {
+                file_hashes.iter().map(|hash| hash.0).collect()
+            }
+            _ => HashSet::new(),
+        };
         let file_paths = || {
             let mut matching: HashSet<WadHash> = HashSet::new();
             if !value_kind(Kind::WadChunkLink) {
@@ -365,6 +375,7 @@ impl Matcher {
             classes,
             fields,
             hashes,
+            wide_hashes,
             files,
             scalar: literal.and_then(Scalar::parse),
             regex: matches!(query.pattern, Pattern::Regex(_)),
@@ -402,7 +413,10 @@ impl Matcher {
         };
         match leaf {
             Leaf::String(value) => text.is_match(value),
-            Leaf::Hash(hash) => self.hashes.contains(hash),
+            Leaf::Hash(hash) => match hash.try_as_bin_hash() {
+                Some(hash) => self.hashes.contains(&hash),
+                None => self.wide_hashes.contains(&hash.as_u64()),
+            },
             Leaf::Link(hash) => self.hashes.contains(hash) || self.entries.contains(hash),
             Leaf::File(hash) => self.files.contains(hash),
             Leaf::None => false,
@@ -1035,7 +1049,8 @@ impl Row {
 }
 
 /// Returns the ritobin text of `leaf`. A hash, a link or a file path is printed as its quoted
-/// name if `names` has one, otherwise as `0x` hex.
+/// name if `names` has one, otherwise as `0x` hex. An 8-byte hash is printed as `0x` and 16
+/// hex digits.
 fn leaf_text(leaf: &Leaf<'_>, names: &GameNames) -> String {
     let named = |name: Option<Cow<'_, str>>, hex: String| match name {
         Some(name) => quote(&name),
@@ -1043,10 +1058,10 @@ fn leaf_text(leaf: &Leaf<'_>, names: &GameNames) -> String {
     };
     match leaf {
         Leaf::String(value) => quote(value),
-        Leaf::Hash(hash) => named(
-            names.bins.lookup(Table::BinHashes, *hash),
-            format_hash(*hash),
-        ),
+        Leaf::Hash(hash) => match hash.try_as_bin_hash() {
+            Some(hash) => named(names.bins.lookup(Table::BinHashes, hash), format_hash(hash)),
+            None => format!("0x{:016x}", hash.as_u64()),
+        },
         Leaf::Link(hash) => named(
             names
                 .bins
@@ -1380,6 +1395,40 @@ entries: map[hash,embed] = {
             found(&literal(&file)),
             [format!("skinMeshProperties.texture: file = {file}")]
         );
+    }
+
+    #[test]
+    fn hex_literal_of_more_than_8_digits_matches_8_byte_hash() {
+        use ltk_hash::HashValue;
+        use ltk_meta::{Bin, BinObject, property::values};
+
+        let bin = Bin::builder()
+            .object(
+                BinObject::builder(0x11u32, 0x22u32)
+                    .property(
+                        0x33u32,
+                        values::Hash::new(HashValue::wide(0x0123_4567_89ab_cdef)),
+                    )
+                    .build(),
+            )
+            .build();
+        let data = to_bin(&bin.into()).unwrap();
+        let names = names();
+        let found = |pattern: &str| -> Vec<String> {
+            let matcher = Matcher::compile(&literal(pattern), &names.bins, &names.paths).unwrap();
+            scan("material.bin", data.clone(), &matcher, usize::MAX)
+                .unwrap()
+                .iter()
+                .map(|hit| show(&Row::new(hit, &names)))
+                .collect()
+        };
+
+        assert_eq!(
+            found("0x0123456789abcdef"),
+            ["00000033: hash = 0x0123456789abcdef"]
+        );
+        // The low 4 bytes of an 8-byte hash are not a 4-byte hash.
+        assert!(found("0x89abcdef").is_empty());
     }
 
     #[test]

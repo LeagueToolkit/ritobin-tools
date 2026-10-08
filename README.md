@@ -127,6 +127,8 @@ Text is validated before it is converted. A syntax error or a type error fails t
 
 Text printed from a bin is verified: the tool parses the text again and compares the result with the bin. It logs a warning if they differ. The text printer does not print a few values exactly, for example a string with a leading or trailing space. `--no-verify` skips the verification.
 
+A `hash` value occupies 4 or 8 bytes in a bin. The PBE build of patch 16.21 stores `StaticMaterialDef.name` in 8 bytes. An 8-byte hash is read from a bin and printed as `0x` and 16 hex digits. No hashtable has names for 8-byte hashes. The text parser does not read that literal as a `hash`, so text that has an 8-byte hash does not convert back to a bin. `convert` logs the warning above for such a bin. YAML writes an 8-byte hash as the same literal, and the literal builds back to an 8-byte hash if the installed game declares the property as a `hash`. `search` matches an 8-byte hash by its `0x` literal.
+
 A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.rito` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
 
 #### YAML and JSON
