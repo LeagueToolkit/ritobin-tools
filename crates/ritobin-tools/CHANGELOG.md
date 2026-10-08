@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/LeagueToolkit/ritobin-tools/compare/v0.2.1...v0.2.2) - 2026-10-08
+
+### Fixed
+
+- resolve hash and link values with the entry table
+
+### Other
+
+- update ltk_ritobin to 0.10.1 and resolve link values with the entry table first
+
 ## [0.2.1](https://github.com/LeagueToolkit/ritobin-tools/compare/v0.2.0...v0.2.1) - 2026-10-08
 
 ### Added
