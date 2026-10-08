@@ -1086,9 +1086,9 @@ dependencies = [
 
 [[package]]
 name = "ltk_ritobin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b897090f0163e7947361bcc2b3f93b990cf1113c399b3398065b617b590e881"
+checksum = "5dc183ab35249b6e7bfdd7f58046d3535bdc8d7b7c51f0f5b9d71db33047eb68"
 dependencies = [
  "glam",
  "indexmap",

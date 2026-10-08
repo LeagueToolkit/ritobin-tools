@@ -1061,10 +1061,10 @@ fn leaf_text(leaf: &Leaf<'_>, names: &GameNames) -> String {
     match leaf {
         Leaf::String(value) => quote(value),
         Leaf::Hash(hash) => match hash.try_as_bin_hash() {
-            Some(hash) => named(names.bins.value_name(hash), format_hash(hash)),
+            Some(hash) => named(names.bins.hash_name(hash), format_hash(hash)),
             None => format!("0x{:016x}", hash.as_u64()),
         },
-        Leaf::Link(hash) => named(names.bins.value_name(*hash), format_hash(*hash)),
+        Leaf::Link(hash) => named(names.bins.link_name(*hash), format_hash(*hash)),
         Leaf::File(hash) => named(
             names.paths.path(*hash).map(Cow::Owned),
             format!("0x{:016x}", hash.0),

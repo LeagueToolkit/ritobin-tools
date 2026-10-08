@@ -787,6 +787,48 @@ mod tests {
     }
 
     #[test]
+    fn to_text_prints_link_and_hash_with_names_from_both_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        std::fs::write(
+            dir.join("hashes.binentries.txt"),
+            "00000001 Entries/One\n00000003 Entries/Three\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("hashes.binhashes.txt"),
+            "00000002 HashesTwo\n00000003 HashesThree\n",
+        )
+        .unwrap();
+        let hashes = BinHashes::load(None, Some(dir));
+
+        let file: BinFile = Bin::builder()
+            .object(
+                BinObject::builder(0x1111_0001u32, 0xaaaa_0001u32)
+                    .property(0x10u32, values::ObjectLink::new(1))
+                    .property(0x11u32, values::ObjectLink::new(2))
+                    .property(0x12u32, values::ObjectLink::new(3))
+                    .property(0x13u32, values::Hash::new(1))
+                    .property(0x14u32, values::Hash::new(2))
+                    .property(0x15u32, values::Hash::new(3))
+                    .build(),
+            )
+            .build()
+            .into();
+        let text = to_text(&file, TextLayout::default(), &hashes).unwrap();
+        for line in [
+            r#"0x10: link = "Entries/One""#,
+            r#"0x11: link = "HashesTwo""#,
+            r#"0x12: link = "Entries/Three""#,
+            r#"0x13: hash = "Entries/One""#,
+            r#"0x14: hash = "HashesTwo""#,
+            r#"0x15: hash = "HashesThree""#,
+        ] {
+            assert!(text.contains(line), "{line} is not in:\n{text}");
+        }
+    }
+
+    #[test]
     fn to_text_clamps_line_width() {
         let file = sample();
         for line_width in [0, 1, usize::MAX] {

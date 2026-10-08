@@ -66,7 +66,7 @@ impl HashTable {
     fn is_known(self, hash: u64, names: &GameNames) -> bool {
         let bin = |table| names.bins.lookup(table, BinHash(hash as u32)).is_some();
         match self {
-            Self::Entries | Self::Hashes => names.bins.value_name(BinHash(hash as u32)).is_some(),
+            Self::Entries | Self::Hashes => names.bins.hash_name(BinHash(hash as u32)).is_some(),
             Self::Fields => bin(Table::BinFields),
             Self::Types => bin(Table::BinTypes),
             Self::Game => names.paths.path(ltk_hash::WadHash(hash)).is_some(),
