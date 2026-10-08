@@ -172,11 +172,18 @@ impl BinHashes {
         })
     }
 
-    /// Returns the name of a `hash` or `link` value. The hash table is checked first, then the
-    /// entry table, because the name of a link target is in the entry table.
-    pub fn value_name(&self, hash: BinHash) -> Option<Cow<'_, str>> {
+    /// Returns the name of a `hash` value. The hash table is checked first, then the entry
+    /// table.
+    pub fn hash_name(&self, hash: BinHash) -> Option<Cow<'_, str>> {
         self.lookup(Table::BinHashes, hash)
             .or_else(|| self.lookup(Table::BinEntries, hash))
+    }
+
+    /// Returns the name of a `link` value. A link stores the path hash of an object, so the
+    /// entry table is checked first, then the hash table.
+    pub fn link_name(&self, hash: BinHash) -> Option<Cow<'_, str>> {
+        self.lookup(Table::BinEntries, hash)
+            .or_else(|| self.lookup(Table::BinHashes, hash))
     }
 }
 
@@ -189,10 +196,10 @@ impl HashProvider for BinHashes {
         self.lookup(Table::BinFields, hash)
     }
 
-    /// Returns the name of a `hash` or `link` value. The printer of `ltk_ritobin` calls this
-    /// function for both value types.
+    /// Returns the name of a `hash` value. The printer of `ltk_ritobin` also calls this function
+    /// for a `link` value if `lookup_entry` returns `None`.
     fn lookup_hash(&self, hash: BinHash) -> Option<Cow<'_, str>> {
-        self.value_name(hash)
+        self.hash_name(hash)
     }
 
     fn lookup_type(&self, hash: BinHash) -> Option<Cow<'_, str>> {
@@ -342,11 +349,12 @@ mod tests {
     }
 
     #[test]
-    fn value_name_falls_back_to_entry_table() {
+    fn hash_name_and_link_name_fall_back_to_other_table() {
         let dir = tempfile::tempdir().unwrap();
         let dir = Utf8Path::from_path(dir.path()).unwrap();
         let entry = BinHash(0x58a7_d43d);
         let both = BinHash(0xb19f_b4b4);
+        let hash = BinHash(0x1234);
         std::fs::write(
             dir.join("hashes.binentries.txt"),
             format!(
@@ -357,19 +365,24 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("hashes.binhashes.txt"),
-            format!("{:08x} hash table\n", both.0),
+            format!("{:08x} hash table\n{:08x} Buffbone\n", both.0, hash.0),
         )
         .unwrap();
 
         let hashes = BinHashes::load(None, Some(dir));
         assert_eq!(
-            hashes.value_name(entry).as_deref(),
+            hashes.hash_name(entry).as_deref(),
             Some("Characters/Rengar/CAC/Rengar_Base")
         );
-        assert_eq!(hashes.lookup_hash(entry), hashes.value_name(entry));
-        assert_eq!(hashes.value_name(both).as_deref(), Some("hash table"));
+        assert_eq!(hashes.lookup_hash(entry), hashes.hash_name(entry));
+        assert_eq!(hashes.hash_name(both).as_deref(), Some("hash table"));
         assert_eq!(hashes.lookup(Table::BinHashes, entry), None);
-        assert_eq!(hashes.value_name(BinHash(1)), None);
+        assert_eq!(hashes.hash_name(BinHash(1)), None);
+
+        assert_eq!(hashes.link_name(hash).as_deref(), Some("Buffbone"));
+        assert_eq!(hashes.link_name(both).as_deref(), Some("entry table"));
+        assert_eq!(hashes.lookup(Table::BinEntries, hash), None);
+        assert_eq!(hashes.link_name(BinHash(1)), None);
     }
 
     #[test]
