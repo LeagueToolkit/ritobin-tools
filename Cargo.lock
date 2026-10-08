@@ -928,9 +928,9 @@ dependencies = [
 
 [[package]]
 name = "ltk_game_data"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a4fb8e904592a47e9e30a2cebf7ff7b265ebbc6ec26e88e6e110ff196ff6f47"
+checksum = "33dc28c2cbe35982eafe26bd96a84cff1a304fa51ce5c34435bb144b8ae71762"
 dependencies = [
  "camino",
  "glam",

@@ -149,21 +149,21 @@ ritobin-tools convert game:data/characters/teemo/skins/skin0.bin --to json -o - 
 # ritobin-tools bin declaration
 links: [DATA/Characters/Teemo/Teemo.bin]
 objects:
-  Characters/Teemo/Skins/Skin0:
-    class: SkinCharacterDataProperties
-    set:
-      championSkinId: 17000
-      skinMeshProperties: !embed(SkinMeshDataProperties)
-        simpleSkin: ASSETS/Characters/Teemo/Skins/Base/Teemo_Base.skn
-        texture: assets/characters/teemo/skins/base/teemo_base_tx_cm.tex
-        selfIllumination: 0.7
-        materialOverride:
-        - !embed(SkinMeshDataProperties_MaterialOverride)
-          submesh: Mushroom
-      animationGraphData: Characters/Teemo/Animations/Skin0
+  Characters/Teemo/Skins/Skin0: !SkinCharacterDataProperties
+    championSkinId: 17000
+    skinMeshProperties: !embed(SkinMeshDataProperties)
+      simpleSkin: ASSETS/Characters/Teemo/Skins/Base/Teemo_Base.skn
+      texture: assets/characters/teemo/skins/base/teemo_base_tx_cm.tex
+      selfIllumination: 0.7
+      materialOverride:
+      - !embed(SkinMeshDataProperties_MaterialOverride)
+        submesh: Mushroom
+    armorMaterial: Flesh
 ```
 
-The YAML is the body of a [game-data](#gamedata) edit: `links` is the dependency list, and each object under `objects` has its `class` and its properties under `set`. A value is written as follows:
+The YAML is the body of a [game-data](#gamedata) edit: `links` is the dependency list, and `objects` has one entry per object of the bin. An object is written as its name, its class as a YAML tag (`!<class>`), and its properties. A class that no hashtable has a name for is written as `0x` hex: `!0x1234abcd`. The tag has an uppercase first letter. A class name is hashed without regard to case, so the tag is the same class as a lowercase spelling in a hashtable.
+
+A value is written as follows:
 
 | Type | Written as |
 | --- | --- |

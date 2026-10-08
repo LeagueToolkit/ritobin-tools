@@ -1,9 +1,10 @@
 //! Writes a bin as a game-data declaration in YAML or as JSON, and builds a bin from the YAML.
 //!
 //! A declaration writes each value without its type: a number, a string, a list or a mapping.
-//! The YAML form is the body of a game-data edit: `links`, and `objects` with a `class` and a
-//! `set` per object. [`from_yaml`] builds it back into a bin, and takes the type of each
-//! property from a class schema. The JSON form is for scripts. It has no reader.
+//! The YAML form is the body of a game-data edit: `links`, and `objects` with one constructed
+//! object per object of the bin. An object is written as its name, a class tag and its
+//! properties: `Name: !Class`. [`from_yaml`] builds the YAML back into a bin, and takes the
+//! type of each property from a class schema. The JSON form is for scripts. It has no reader.
 
 use std::borrow::Cow;
 
@@ -157,34 +158,100 @@ fn prop<'a>(file: &'a BinFile, format: &str) -> Result<&'a Bin> {
 }
 
 /// Writes `file` as a YAML declaration: the dependency list under `links`, and each object
-/// under `objects` with its `class` and its properties under `set`.
+/// under `objects` as its name, its class as a class tag, and its properties.
+///
+/// An object whose class has no class tag, see [`class_tag`], is written with the keys `class`
+/// and `set`.
 ///
 /// Fails for a `PTCH` file and for a value that a declaration cannot hold, see [`render`].
 pub fn to_yaml(file: &BinFile, hashes: &BinHashes) -> Result<String> {
     let bin = prop(file, "yaml")?;
-    let mut body = IndexMap::new();
-    if !bin.dependencies.is_empty() {
-        let links = bin.dependencies.iter().cloned().map(Value::String);
-        body.insert("links".to_owned(), Value::List(links.collect()));
-    }
-    let objects: IndexMap<String, Value> = render(bin, hashes)?
-        .into_iter()
-        .map(|object| {
-            let mut fields = IndexMap::from([("class".to_owned(), Value::String(object.class))]);
-            if !object.properties.is_empty() {
-                fields.insert("set".to_owned(), Value::Mapping(object.properties));
-            }
-            (object.name, Value::Mapping(fields))
-        })
-        .collect();
-    if !objects.is_empty() {
-        body.insert("objects".to_owned(), Value::Mapping(objects));
+    let objects = render(bin, hashes)?;
+    if bin.dependencies.is_empty() && objects.is_empty() {
+        return Ok(format!("{YAML_HEADER}\n{{}}\n"));
     }
 
-    let yaml = Value::Mapping(body)
+    let mut text = format!("{YAML_HEADER}\n");
+    if !bin.dependencies.is_empty() {
+        let links = bin.dependencies.iter().cloned().map(Value::String);
+        let links = IndexMap::from([("links".to_owned(), Value::List(links.collect()))]);
+        push_indented(&mut text, &yaml(&Value::Mapping(links))?, 0);
+    }
+    if !objects.is_empty() {
+        text.push_str("objects:\n");
+    }
+    for object in objects {
+        let key = yaml_key(&object.name)?;
+        let body = match class_tag(&object.class) {
+            Some(tag) => {
+                text.push_str(&format!("  {key}: !{tag}\n"));
+                object.properties
+            }
+            None => {
+                text.push_str(&format!("  {key}:\n"));
+                let mut fields =
+                    IndexMap::from([("class".to_owned(), Value::String(object.class))]);
+                if !object.properties.is_empty() {
+                    fields.insert("set".to_owned(), Value::Mapping(object.properties));
+                }
+                fields
+            }
+        };
+        if !body.is_empty() {
+            push_indented(&mut text, &yaml(&Value::Mapping(body))?, 4);
+        }
+    }
+    Ok(text)
+}
+
+/// Returns the class tag of `class`, without the `!`: `class` with its first letter in upper
+/// case. Returns `None` if `class` has a character other than an ASCII letter, an ASCII digit
+/// or `_`, which a YAML tag does not hold unescaped.
+///
+/// A class name is hashed without regard to case, so the tag is read as the same class. The
+/// reader does not read a type name, `ref` or a YAML core tag as a class. Each of those starts
+/// with a lowercase letter.
+fn class_tag(class: &str) -> Option<String> {
+    let is_identifier =
+        !class.is_empty() && class.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    is_identifier.then(|| {
+        let mut tag = class.to_owned();
+        tag[..1].make_ascii_uppercase();
+        tag
+    })
+}
+
+/// Returns `value` as YAML text.
+fn yaml(value: &Value) -> Result<String> {
+    value
         .to_yaml()
-        .map_err(|error| miette::miette!("Failed to write the declaration: {error}"))?;
-    Ok(format!("{YAML_HEADER}\n{yaml}\n"))
+        .map_err(|error| miette::miette!("Failed to write the declaration: {error}"))
+}
+
+/// Returns `name` as the text of a YAML mapping key. The key is quoted if YAML reads the plain
+/// text as another type.
+fn yaml_key(name: &str) -> Result<String> {
+    const NULL_VALUE: &str = ": null";
+    let entry = yaml(&Value::Mapping(IndexMap::from([(
+        name.to_owned(),
+        Value::Null,
+    )])))?;
+    match entry.strip_suffix(NULL_VALUE) {
+        Some(key) if !key.contains('\n') => Ok(key.to_owned()),
+        _ => miette::bail!("Failed to write the declaration: {name} cannot be a YAML key"),
+    }
+}
+
+/// Appends the lines of `yaml` to `text`, each indented by `indent` spaces. An empty line is
+/// appended without indentation.
+fn push_indented(text: &mut String, yaml: &str, indent: usize) {
+    for line in yaml.lines() {
+        if !line.is_empty() {
+            text.extend(std::iter::repeat_n(' ', indent));
+        }
+        text.push_str(line);
+        text.push('\n');
+    }
 }
 
 /// Writes `file` as JSON for scripts: `links`, and `objects` with one object per entry. An
@@ -278,7 +345,7 @@ pub fn from_yaml(name: &str, text: &str, schema: &dyn Schema) -> Result<Bin> {
         || !only_constructs
     {
         miette::bail!(
-            "{name} is not a bin declaration. A bin declaration has only `links` and `objects`, and each object has a `class`. To apply edits to a game bin, use `ritobin-tools gamedata apply`"
+            "{name} is not a bin declaration. A bin declaration has only `links` and `objects`, and each object has a class. To apply edits to a game bin, use `ritobin-tools gamedata apply`"
         );
     }
 
@@ -613,7 +680,7 @@ entries: map[hash,embed] = {
     }
 
     #[test]
-    fn to_yaml_writes_values_without_types_and_structs_as_tags() {
+    fn to_yaml_writes_values_without_types_and_classes_as_tags() {
         let (_guard, hashes) = hashes();
         let yaml = to_yaml(&skin(), &hashes).unwrap();
         let unnamed = format!("0x{:08x}", BinHash::hash_str("unnamed_field_0123").0);
@@ -624,31 +691,29 @@ entries: map[hash,embed] = {
                 r#"# ritobin-tools bin declaration
 links: [DATA/Shared.bin]
 objects:
-  Characters/Test/Skins/Skin0:
-    class: SkinCharacterDataProperties
-    set:
-      championSkinId: 17000
-      healthBarStyle: 12
-      skinMeshProperties: !embed(SkinMeshDataProperties)
-        simpleSkin: ASSETS/Test/Test.skn
-        texture: assets/test/test.tex
-        selfIllumination: 0.7
-        boundingBox:
-        - [50.0, 150.0, 150.0]
-        fresnelColor: [0, 0, 0, 255]
-        materialOverride:
-        - !embed(MaterialOverride)
-          submesh: Mushroom
-      animationGraphData: Characters/Test/Animations/Skin0
+  Characters/Test/Skins/Skin0: !SkinCharacterDataProperties
+    championSkinId: 17000
+    healthBarStyle: 12
+    skinMeshProperties: !embed(SkinMeshDataProperties)
+      simpleSkin: ASSETS/Test/Test.skn
+      texture: assets/test/test.tex
+      selfIllumination: 0.7
+      boundingBox:
+      - [50.0, 150.0, 150.0]
+      fresnelColor: [0, 0, 0, 255]
+      materialOverride:
+      - !embed(MaterialOverride)
+        submesh: Mushroom
+    animationGraphData: Characters/Test/Animations/Skin0
+    joint: Hat
+    emptyName: "0x811c9dc5"
+    nothing: null
+    modifier: !pointer({modifier})
       joint: Hat
-      emptyName: "0x811c9dc5"
-      nothing: null
-      modifier: !pointer({modifier})
-        joint: Hat
-      sounds:
-        attack: Play_Attack
-      visible: true
-      "{unnamed}": false
+    sounds:
+      attack: Play_Attack
+    visible: true
+    "{unnamed}": false
 "#
             )
         );
@@ -680,6 +745,113 @@ objects:
         );
     }
 
+    /// A bin with one object per written form: a class tag over properties, a class tag
+    /// alone, a hash as the class tag, three class names that the hashtable has in lower case,
+    /// and a class that is written under `class`. `UNTAGGABLE` is replaced by the hash of that
+    /// class.
+    const OBJECT_FORMS: &str = r#"#PROP_text
+type: string = "PROP"
+version: u32 = 3
+linked: list[string] = {}
+entries: map[hash,embed] = {
+    "Items/Tagged" = ItemData {
+        price: i32 = 300
+    }
+    "Items/Empty" = ItemData {}
+    "Items/Unnamed" = UnnamedClass {
+        price: i32 = 5
+    }
+    "Items/Lowercase" = mapgeo {
+        price: i32 = 7
+    }
+    "Items/TypeName" = link {
+        price: i32 = 9
+    }
+    "Items/CoreTag" = bool {}
+    "Items/Untaggable" = UNTAGGABLE {
+        price: i32 = 11
+    }
+    "Items/UntaggableEmpty" = UNTAGGABLE {}
+}
+"#;
+
+    #[test]
+    fn to_yaml_writes_class_tag_or_class_key_per_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        for (table, names) in [
+            (
+                "entries",
+                [
+                    "Items/Tagged",
+                    "Items/Empty",
+                    "Items/Lowercase",
+                    "Items/TypeName",
+                    "Items/CoreTag",
+                    "Items/Untaggable",
+                    "Items/UntaggableEmpty",
+                ]
+                .as_slice(),
+            ),
+            (
+                "types",
+                &["ItemData", "mapgeo", "link", "bool", "Item.Data"],
+            ),
+            ("fields", &["price"]),
+        ] {
+            let lines: String = names
+                .iter()
+                .map(|name| format!("{:08x} {name}\n", BinHash::hash_str(name).0))
+                .collect();
+            std::fs::write(path.join(format!("hashes.bin{table}.txt")), lines).unwrap();
+        }
+        let hashes = BinHashes::load(None, Some(&path));
+        // Ritobin text has no spelling for a class name with a `.`, so the class is a hash.
+        let untaggable = format!("0x{:08x}", BinHash::hash_str("Item.Data").0);
+        let text = OBJECT_FORMS.replace("UNTAGGABLE", &untaggable);
+        let file = Document::parse("items.rito", text.into(), ReadOptions::default())
+            .unwrap()
+            .file;
+
+        let yaml = to_yaml(&file, &hashes).unwrap();
+        let unnamed_entry = format!("0x{:08x}", BinHash::hash_str("Items/Unnamed").0);
+        let unnamed_class = format!("0x{:08x}", BinHash::hash_str("UnnamedClass").0);
+        assert_eq!(
+            yaml,
+            format!(
+                r#"# ritobin-tools bin declaration
+objects:
+  Items/Tagged: !ItemData
+    price: 300
+  Items/Empty: !ItemData
+  "{unnamed_entry}": !{unnamed_class}
+    price: 5
+  Items/Lowercase: !Mapgeo
+    price: 7
+  Items/TypeName: !Link
+    price: 9
+  Items/CoreTag: !Bool
+  Items/Untaggable:
+    class: Item.Data
+    set:
+      price: 11
+  Items/UntaggableEmpty:
+    class: Item.Data
+"#
+            )
+        );
+
+        let schema = ObservedSchema::of(&file);
+        let built = from_yaml("items.yaml", &yaml, &schema).unwrap();
+        assert!(same_bin(bin(&file), &built), "{yaml}");
+
+        let empty = BinFile::Prop(Bin::builder().build());
+        let yaml = to_yaml(&empty, &hashes).unwrap();
+        assert_eq!(yaml, "# ritobin-tools bin declaration\n{}\n");
+        let built = from_yaml("empty.yaml", &yaml, &schema).unwrap();
+        assert!(built.objects.is_empty());
+    }
+
     #[test]
     fn from_yaml_fails_for_class_or_property_that_schema_does_not_have() {
         let (_guard, hashes) = hashes();
@@ -701,8 +873,8 @@ objects:
         // A property that the class does not have in the schema.
         let schema = ObservedSchema::of(&file);
         let extra = yaml.replace(
-            "      visible: true\n",
-            "      visible: true\n      newField: 3\n",
+            "    visible: true\n",
+            "    visible: true\n    newField: 3\n",
         );
         let text = from_yaml("skin0.yaml", &extra, &schema)
             .unwrap_err()
@@ -717,8 +889,8 @@ objects:
         // A property and a class inside a struct are named with their path.
         let nested = yaml
             .replace(
-                "          submesh: Mushroom\n",
-                "          submesh: Mushroom\n          extra: 1\n",
+                "        submesh: Mushroom\n",
+                "        submesh: Mushroom\n        extra: 1\n",
             )
             .replace("!pointer(", "!pointer(New");
         let text = from_yaml("skin0.yaml", &nested, &schema)
