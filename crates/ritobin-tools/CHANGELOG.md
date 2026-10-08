@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/LeagueToolkit/ritobin-tools/compare/v0.2.0...v0.2.1) - 2026-10-08
+
+### Added
+
+- write the class of an object as a YAML class tag
+- write a bin as YAML or JSON and build a bin from YAML
+- list the hashes of bins that no hashtable resolves
+- search the bins inside WAD archives and mod packages
+- search the records of PTCH files and diff two PTCH files
+- add the completions command
+- add the merge command
+- add the format command and print the same layout from convert
+- print file values as paths
+- read a game bin as the input of convert
+- extract game bins and read game bins as inputs of diff and patch
+- add the patch command that applies PTCH files to a bin
+- add the search command for names, values and references in bins
+
+### Other
+
+- update ltk_meta to 0.9, ltk_ritobin to 0.10, ltk_hash to 0.5 and ltk_game_data to 0.9
+- compare the messages of the error chain instead of the rendered report
+
 ## [0.2.0](https://github.com/LeagueToolkit/ritobin-tools/compare/v0.1.0...v0.2.0) - 2026-10-06
 
 ### Added
