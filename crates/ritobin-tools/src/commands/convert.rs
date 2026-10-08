@@ -2,6 +2,7 @@ use std::{cell::OnceCell, collections::HashMap};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Args;
+use ltk_meta::BinFile;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use walkdir::WalkDir;
 
@@ -12,9 +13,11 @@ use crate::{
         input::{Inputs, game_bin},
     },
     context::Context,
+    declaration,
     document::{
-        DEFAULT_TEXT_EXTENSION, Format, ReadOptions, STDIO, TEXT_EXTENSIONS, TextLayout,
-        converted_path, detect_file, encode, reads_back, scanned_format, write_bytes,
+        BIN_EXTENSION, DEFAULT_TEXT_EXTENSION, Document, Format, JSON_EXTENSION, ReadOptions,
+        STDIO, TEXT_EXTENSIONS, TextLayout, YAML_EXTENSIONS, converted_path, detect_file, encode,
+        reads_back, scanned_format, write_bytes,
     },
     hashes::BinHashes,
     utils::{hyperlink_path, plural, same_file_key},
@@ -24,7 +27,7 @@ use crate::{
 pub struct ConvertArgs {
     /// Files or directories to convert. `-` reads standard input. `game:<BIN>` reads a bin
     /// of the game, where `<BIN>` is a bin path, a chunk hash or an entry, as for
-    /// `gamedata extract`
+    /// `gamedata extract`. A `.yaml` file is a bin declaration
     #[arg(value_name = "INPUTS")]
     pub inputs: Vec<Utf8PathBuf>,
 
@@ -41,13 +44,13 @@ pub struct ConvertArgs {
     #[arg(short, long)]
     pub recursive: bool,
 
-    /// Output format. Defaults to the format of the output file extension, or to the other
-    /// format than the input
+    /// Output format. Defaults to the format of the output file extension. Without one, a
+    /// binary bin is converted to ritobin text and every other input to a binary bin
     #[arg(short, long, value_enum, value_name = "FORMAT")]
     pub to: Option<Format>,
 
-    /// Input format that a directory input is scanned for. Defaults to the other format than
-    /// `--to`, or to `bin`
+    /// Input format that a directory input is scanned for. Defaults to `bin` if `--to` is a
+    /// text format, and to `rito` if `--to` is `bin`
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub from: Option<Format>,
 
@@ -264,6 +267,11 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
         .or(args.to.map(Format::opposite))
         .unwrap_or(Format::Bin);
     let to = args.to.unwrap_or(from.opposite());
+    if from == Format::Json {
+        miette::bail!(
+            "JSON is an output format and cannot be read back. Pass --from yaml, rito or bin"
+        );
+    }
     if let Some(output) = &args.output
         && output.as_str() == STDIO
     {
@@ -297,13 +305,18 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
     }
 
     if files.is_empty() {
-        let wanted = match from {
-            Format::Bin => ".bin".to_owned(),
-            Format::Rito => TEXT_EXTENSIONS
+        let extensions = |extensions: &[&str]| {
+            extensions
                 .iter()
                 .map(|extension| format!(".{extension}"))
                 .collect::<Vec<_>>()
-                .join(", "),
+                .join(", ")
+        };
+        let wanted = match from {
+            Format::Bin => extensions(&[BIN_EXTENSION]),
+            Format::Rito => extensions(TEXT_EXTENSIONS),
+            Format::Yaml => extensions(YAML_EXTENSIONS),
+            Format::Json => extensions(&[JSON_EXTENSION]),
         };
         let recursion = match args.recursive {
             true => "",
@@ -331,6 +344,33 @@ fn scan(dir: &Utf8Path, args: &ConvertArgs) -> Result<Vec<Job>> {
         .collect())
 }
 
+/// Builds the YAML declaration `yaml`, which was written for `document`, back into a bin with
+/// the class schema of the game. Logs a warning if the result is not the bin of `document`, or
+/// if the declaration cannot be built.
+///
+/// Does nothing if no game directory is set, because the class schema comes from the game.
+fn verify_yaml(document: &Document, yaml: &[u8], input: &Utf8Path, inputs: &Inputs) {
+    let Some(schema) = inputs.schema() else {
+        tracing::debug!(
+            "The YAML written for {input} was not verified, because no game directory is set"
+        );
+        return;
+    };
+    let built = schema.and_then(|schema| {
+        let text = std::str::from_utf8(yaml).into_diagnostic()?;
+        declaration::from_yaml(input.as_str(), text, schema)
+    });
+    match (built, &document.file) {
+        (Ok(built), BinFile::Prop(bin)) if declaration::same_bin(bin, &built) => {}
+        (Ok(_), _) => tracing::warn!(
+            "The YAML written for {input} does not build back to the same bin. Run `ritobin-tools diff -f summary` on the bin and the YAML to list the differences."
+        ),
+        (Err(error), _) => {
+            tracing::warn!("The YAML written for {input} cannot be built back into a bin: {error}")
+        }
+    }
+}
+
 /// Converts one file. Returns `Skipped` if `--skip-existing` is set and the output file exists.
 fn convert<'h>(
     job: &Job,
@@ -353,12 +393,15 @@ fn convert<'h>(
     let to = job.to.unwrap_or(document.format.opposite());
 
     let empty = BinHashes::none();
-    let hashes = match to {
-        Format::Rito => hashes(),
-        Format::Bin => &empty,
+    let hashes = match to.is_text() {
+        true => hashes(),
+        false => &empty,
     };
     let data = encode(&document.file, to, layout, hashes)
         .wrap_err_with(|| format!("Failed to convert {}", job.input))?;
+    if to == Format::Yaml && document.format != Format::Yaml && !args.no_verify {
+        verify_yaml(&document, &data, &job.input, inputs);
+    }
 
     if (document.format, to) == (Format::Bin, Format::Rito)
         && !args.no_verify

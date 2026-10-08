@@ -1,4 +1,5 @@
-//! Reads and writes bin documents in both formats: binary `.bin` and ritobin text.
+//! Reads and writes bin documents: binary `.bin`, ritobin text, and the declaration formats
+//! of the `declaration` module.
 
 use std::{
     fmt,
@@ -18,7 +19,7 @@ use miette::{Diagnostic as MietteDiagnostic, IntoDiagnostic, NamedSource, Result
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::hashes::BinHashes;
+use crate::{declaration, hashes::BinHashes};
 
 /// The path argument that selects standard input or standard output.
 pub const STDIO: &str = "-";
@@ -31,6 +32,12 @@ pub const TEXT_EXTENSIONS: &[&str] = &["rito", "ritobin", "py"];
 
 /// The file extension of a binary bin file.
 pub const BIN_EXTENSION: &str = "bin";
+
+/// The file extensions of a YAML declaration. The first one is used for output.
+pub const YAML_EXTENSIONS: &[&str] = &["yaml", "yml"];
+
+/// The file extension of JSON output.
+pub const JSON_EXTENSION: &str = "json";
 
 /// The maximum number of problems shown for one text file. The remaining problems are only
 /// counted.
@@ -45,11 +52,18 @@ pub enum Format {
     /// Ritobin text.
     #[value(alias = "text", alias = "ritobin")]
     Rito,
+    /// A game-data declaration in YAML. Values are written without their types. Reading it
+    /// requires the class schema of the installed game.
+    #[value(alias = "yml")]
+    Yaml,
+    /// JSON for scripts. It is an output format and cannot be read back.
+    Json,
 }
 
 impl Format {
     /// Returns the format of `data`, detected from its magic bytes. Returns `Rito` if `data`
-    /// does not start with a bin magic.
+    /// does not start with a bin magic. YAML and JSON are recognized by file extension only,
+    /// see [`Format::from_extension`].
     pub fn detect(data: &[u8]) -> Self {
         match BinKind::identify_from_bytes(data) {
             Some(_) => Self::Bin,
@@ -64,16 +78,37 @@ impl Format {
             Some(Self::Bin)
         } else if TEXT_EXTENSIONS.contains(&extension.as_str()) {
             Some(Self::Rito)
+        } else if YAML_EXTENSIONS.contains(&extension.as_str()) {
+            Some(Self::Yaml)
+        } else if extension == JSON_EXTENSION {
+            Some(Self::Json)
         } else {
             None
         }
     }
 
-    /// Returns the other format. A conversion uses it as the default output format.
+    /// Returns the default output format of a conversion from this format: ritobin text for a
+    /// binary bin, and a binary bin for every other format.
     pub fn opposite(self) -> Self {
         match self {
             Self::Bin => Self::Rito,
-            Self::Rito => Self::Bin,
+            Self::Rito | Self::Yaml | Self::Json => Self::Bin,
+        }
+    }
+
+    /// Returns `true` for a format that prints hashes as names: every format except `Bin`.
+    pub fn is_text(self) -> bool {
+        self != Self::Bin
+    }
+
+    /// Returns the file extension of the format. `text_extension` is the extension of ritobin
+    /// text.
+    pub fn extension(self, text_extension: &str) -> &str {
+        match self {
+            Self::Bin => BIN_EXTENSION,
+            Self::Rito => text_extension,
+            Self::Yaml => YAML_EXTENSIONS[0],
+            Self::Json => JSON_EXTENSION,
         }
     }
 }
@@ -83,6 +118,8 @@ impl fmt::Display for Format {
         f.write_str(match self {
             Self::Bin => "bin",
             Self::Rito => "rito",
+            Self::Yaml => "yaml",
+            Self::Json => "json",
         })
     }
 }
@@ -216,7 +253,9 @@ impl Document {
                     format: Format::Bin,
                 })
             }
-            Format::Rito => {
+            // `Format::detect` returns `Bin` or `Rito`. Data without a bin magic is read as
+            // ritobin text.
+            Format::Rito | Format::Yaml | Format::Json => {
                 let text = String::from_utf8(data).map_err(|_| {
                     miette::miette!("{name} is neither a bin file nor UTF-8 ritobin text")
                 })?;
@@ -234,8 +273,14 @@ impl Document {
     }
 }
 
-/// Returns the format of the file at `path`, detected from its first 4 bytes.
+/// Returns the format of the file at `path`: `Yaml` or `Json` for a file with that extension,
+/// otherwise the format detected from its first 4 bytes.
 pub fn detect_file(path: &Utf8Path) -> Result<Format> {
+    if let Some(format @ (Format::Yaml | Format::Json)) =
+        path.extension().and_then(Format::from_extension)
+    {
+        return Ok(format);
+    }
     let mut magic = Vec::with_capacity(4);
     std::fs::File::open(path)
         .and_then(|file| file.take(4).read_to_end(&mut magic))
@@ -324,6 +369,8 @@ pub fn encode(
         Format::Rito => Ok(to_text(file, layout, hashes)
             .into_diagnostic()?
             .into_bytes()),
+        Format::Yaml => declaration::to_yaml(file, hashes).map(String::into_bytes),
+        Format::Json => declaration::to_json(file, hashes).map(String::into_bytes),
     }
 }
 
@@ -432,10 +479,7 @@ fn reindent(text: String, indent_size: usize) -> String {
 /// Returns the default output path of a conversion: `input` with the file extension of the
 /// target format.
 pub fn converted_path(input: &Utf8Path, to: Format, text_extension: &str) -> Utf8PathBuf {
-    input.with_extension(match to {
-        Format::Bin => BIN_EXTENSION,
-        Format::Rito => text_extension,
-    })
+    input.with_extension(to.extension(text_extension))
 }
 
 /// One problem in a ritobin text file, with the span of the text it refers to.
@@ -784,7 +828,9 @@ mod tests {
             Some(Format::Rito)
         );
         assert_eq!(scanned_format(&file("b.PY", "print('hi')\n")), None);
-        assert_eq!(scanned_format(&file("a.json", "{}")), None);
+        assert_eq!(scanned_format(&file("a.json", "{}")), Some(Format::Json));
+        assert_eq!(scanned_format(&file("a.yml", "{}")), Some(Format::Yaml));
+        assert_eq!(scanned_format(&file("a.txt", "")), None);
         assert_eq!(scanned_format(&dir.join("no-extension")), None);
         // A `.py` file that cannot be read is treated as ritobin text.
         assert_eq!(scanned_format(&dir.join("missing.py")), Some(Format::Rito));
@@ -806,7 +852,22 @@ mod tests {
         assert_eq!(Format::from_extension("bin"), Some(Format::Bin));
         assert_eq!(Format::from_extension("RITO"), Some(Format::Rito));
         assert_eq!(Format::from_extension("py"), Some(Format::Rito));
-        assert_eq!(Format::from_extension("json"), None);
+        assert_eq!(Format::from_extension("yaml"), Some(Format::Yaml));
+        assert_eq!(Format::from_extension("YML"), Some(Format::Yaml));
+        assert_eq!(Format::from_extension("json"), Some(Format::Json));
+        assert_eq!(Format::from_extension("txt"), None);
+    }
+
+    #[test]
+    fn opposite_is_text_for_bin_and_bin_for_every_text_format() {
+        assert_eq!(Format::Bin.opposite(), Format::Rito);
+        for format in [Format::Rito, Format::Yaml, Format::Json] {
+            assert_eq!(format.opposite(), Format::Bin);
+            assert!(format.is_text());
+        }
+        assert!(!Format::Bin.is_text());
+        assert_eq!(Format::Yaml.extension("rito"), "yaml");
+        assert_eq!(Format::Rito.extension("py"), "py");
     }
 
     #[test]

@@ -43,6 +43,7 @@ ltk_game_index = { version = "0.1.4", features = ["objects"] }
 ltk_wad = "0.5.8"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 ltk_modpkg = "0.12"
+serde-saphyr = { version = "1.2", default-features = false, features = ["deserialize"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

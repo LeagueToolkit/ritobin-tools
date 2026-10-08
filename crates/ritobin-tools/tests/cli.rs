@@ -1010,6 +1010,116 @@ fn gamedata_extract_writes_game_bins_and_convert_diff_and_patch_read_game_inputs
 }
 
 #[test]
+fn convert_writes_yaml_that_builds_back_to_the_same_bin_and_json_for_scripts() {
+    let ws = Workspace::new();
+    let tables = ws.field_table();
+    let base = ws.write("base.rito", BASE);
+    ws.tool().arg("convert").arg(&base).assert().success();
+    let bin = ws.path("base.bin");
+    let bytes = fs::read(&bin).unwrap();
+    // The class schema is observed from the game, so the game has a bin of the same class.
+    let game = write_game(&ws, &[("data/skin0.bin", &bytes)]);
+    let game_args = |command: &mut Command| {
+        command
+            .arg("--game-dir")
+            .arg(&game)
+            .arg("--index-dir")
+            .arg(ws.path("index"));
+    };
+
+    // The YAML has no types. The entry and the class have no known name.
+    let yaml = ws.path("base.yaml");
+    let mut convert = ws.tool();
+    convert
+        .arg("convert")
+        .arg(&bin)
+        .arg("--output")
+        .arg(&yaml)
+        .arg("--hashtable")
+        .arg(&tables);
+    game_args(&mut convert);
+    let output = convert.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let entry = fnv1a("Characters/Test/Skins/Skin0");
+    let class = fnv1a("SkinCharacterDataProperties");
+    assert_eq!(
+        read(&yaml),
+        format!(
+            "# ritobin-tools bin declaration\nlinks: [shared.bin]\nobjects:\n  \"0x{entry:08x}\":\n    class: \"0x{class:08x}\"\n    set:\n      Size: 1.0\n      Name: base\n      Tags: [a, b]\n"
+        )
+    );
+
+    // An edited YAML builds a bin with the edited value. An unchanged YAML builds the same
+    // bytes.
+    for (name, text, size) in [
+        ("back", read(&yaml), "Size: f32 = 1"),
+        (
+            "edited",
+            read(&yaml).replace("Size: 1.0", "Size: 2.5"),
+            "Size: f32 = 2.5",
+        ),
+    ] {
+        let source = ws.write(&format!("{name}.yaml"), &text);
+        let built = ws.path(&format!("{name}.bin"));
+        let mut convert = ws.tool();
+        convert
+            .arg("convert")
+            .arg(&source)
+            .arg("--output")
+            .arg(&built);
+        game_args(&mut convert);
+        let output = convert.output().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(fs::read(&built).unwrap() == bytes, name == "back");
+
+        let printed = ws
+            .tool()
+            .arg("convert")
+            .arg(&built)
+            .args(["--output", "-", "--hashtable"])
+            .arg(&tables)
+            .output()
+            .unwrap();
+        assert!(stdout(&printed).contains(size), "{}", stdout(&printed));
+    }
+
+    // Without a game directory the YAML cannot be built, because its types are unknown.
+    let output = ws
+        .tool()
+        .arg("convert")
+        .arg(&yaml)
+        .arg("--output")
+        .arg(ws.path("no-game.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("requires the class schema of the installed game"));
+    assert!(!ws.path("no-game.bin").exists());
+
+    // JSON is written without a game, and it cannot be read back.
+    let json = ws.path("base.json");
+    ws.tool()
+        .arg("convert")
+        .arg(&bin)
+        .arg("--output")
+        .arg(&json)
+        .arg("--hashtable")
+        .arg(&tables)
+        .assert()
+        .success();
+    let document: serde_json::Value = serde_json::from_str(&read(&json)).unwrap();
+    let object = &document["objects"][format!("0x{entry:08x}")];
+    assert_eq!(object["~class"], format!("0x{class:08x}"));
+    assert_eq!(object["Size"], 1.0);
+    assert_eq!(object["Tags"], serde_json::json!(["a", "b"]));
+    assert_eq!(document["links"], serde_json::json!(["shared.bin"]));
+
+    let output = ws.tool().arg("convert").arg(&json).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_line(&output).contains("JSON is an output format"));
+}
+
+#[test]
 fn search_exit_code_is_0_on_match_1_on_no_match_and_2_on_failure() {
     let ws = Workspace::new();
     let text = ws.write("skin0.rito", BASE);

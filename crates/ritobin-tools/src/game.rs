@@ -19,13 +19,14 @@ use ltk_meta::{BinFile, BinObject};
 use ltk_wad::Wad;
 use miette::{IntoDiagnostic, Result, WrapErr};
 
-use crate::hashes::WadPaths;
+use crate::{hashes::WadPaths, schema::ObservedSchema};
 
 /// The archive directory, relative to the game directory.
 const ARCHIVES_DIR: &str = "DATA/FINAL";
 
 const CHUNK_INDEX_FILE: &str = "game_index.bin";
 const OBJECT_INDEX_FILE: &str = "object_index.bin";
+const SCHEMA_FILE: &str = "class_schema.bin";
 
 /// One archive of the game and its bin chunks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +93,8 @@ pub struct Game {
     paths: WadPaths,
     /// Loaded or built on the first call to [`Game::objects`].
     objects: OnceCell<ObjectIndex>,
+    /// Loaded or observed on the first call to [`Game::schema`].
+    schema: OnceCell<ObservedSchema>,
     /// Mounted archives, kept open between chunk reads.
     archives: RefCell<HashMap<ArchiveId, Wad<BufReader<File>>>>,
     /// Decoded bins, cached by [`Game::object`].
@@ -141,6 +144,7 @@ impl Game {
             index_dir,
             paths,
             objects: OnceCell::new(),
+            schema: OnceCell::new(),
             archives: RefCell::default(),
             bins: RefCell::default(),
         })
@@ -237,6 +241,37 @@ impl Game {
                     objects
                 }
             }
+        })
+    }
+
+    /// Returns the class schema of the game: the type of every property that a game bin uses.
+    ///
+    /// The first call loads the schema from the cache. If the cache is missing or was written
+    /// for another archive set, it reads every bin of the game, which takes a few seconds, and
+    /// saves the schema.
+    pub fn schema(&self) -> &ObservedSchema {
+        self.schema.get_or_init(|| {
+            let cache = self.index_dir.join(SCHEMA_FILE);
+            let fingerprint = self.index.fingerprint().as_u64();
+            if let Some(schema) = ObservedSchema::load(&cache, fingerprint) {
+                return schema;
+            }
+            tracing::info!(
+                "Reading the class schema from the bins of {}. It is read again after each game patch.",
+                self.dir
+            );
+            let started = std::time::Instant::now();
+            let schema = ObservedSchema::observe(&self.bin_archives());
+            if let Err(error) = schema.save(&cache, fingerprint) {
+                tracing::warn!("Failed to save the class schema cache: {error}");
+            }
+            tracing::info!(
+                "Read {} properties of {} classes in {:.1} s",
+                schema.properties(),
+                schema.classes(),
+                started.elapsed().as_secs_f32()
+            );
+            schema
         })
     }
 
@@ -584,6 +619,49 @@ mod tests {
             ]
         );
         assert!(archives[0].path.ends_with("A.wad.client"));
+    }
+
+    #[test]
+    fn schema_is_observed_from_game_bins_and_reloaded_from_cache() {
+        use ltk_game_data::{Schema as _, Shape};
+        use ltk_meta::PropertyKind;
+
+        let installation = Installation::new();
+        installation.archive("A.wad.client", &[("data/one.bin", &bin(1, 10))]);
+        installation.archive("B.wad.client", &[("data/two.bin", &bin(2, 20))]);
+        let class = BinHash(0xaaaa_0001);
+
+        let first = installation.open();
+        let schema = first.schema().clone();
+        assert_eq!((schema.classes(), schema.properties()), (1, 1));
+        assert_eq!(
+            schema.expected(class, BinHash(0x10)),
+            Some(Shape::bare(PropertyKind::I32))
+        );
+        drop(first);
+        assert!(installation.root.join("index").join(SCHEMA_FILE).exists());
+
+        // The second game has no archive to observe from. It reads the schema of the cache
+        // only if the archive set is the same.
+        let second = installation.open();
+        assert_eq!(second.schema(), &schema);
+
+        installation.archive(
+            "C.wad.client",
+            &[("data/three.bin", &{
+                let bin: BinFile = Bin::builder()
+                    .object(
+                        BinObject::builder(3u32, 0xaaaa_0002u32)
+                            .property(0x20u32, values::Bool::new(true))
+                            .build(),
+                    )
+                    .build()
+                    .into();
+                to_bin(&bin).unwrap()
+            })],
+        );
+        let third = installation.open();
+        assert_eq!(third.schema().classes(), 2);
     }
 
     #[test]
