@@ -1272,3 +1272,63 @@ fn bare_file_arguments_are_converted() {
         .success();
     assert!(ws.path("skin0.bin").exists());
 }
+
+#[test]
+fn convert_round_trips_8_byte_hash_through_bin() {
+    let ws = Workspace::new();
+    let text = ws.write(
+        "material.rito",
+        r#"#PROP_text
+type: string = "PROP"
+version: u32 = 3
+linked: list[string] = {}
+entries: map[hash, embed] = {
+    "Characters/Zac/Skins/Skin31/Materials/ult" = StaticMaterialDef {
+        name: hash[u64,xxh3] = "Characters/Zac/Skins/Skin31/Materials/ult"
+        other: hash[u64] = 0x1
+        keys: list[hash[u64,xxh3]] = { "a", 0x2 }
+    }
+}
+"#,
+    );
+
+    ws.tool().arg("convert").arg(&text).assert().success();
+    let bin = ws.path("material.bin");
+    assert!(fs::read(&bin).unwrap().starts_with(b"PROP"));
+
+    // The printed text declares the width of each 8-byte hash and parses back to the same bin.
+    let output = ws
+        .tool()
+        .arg("convert")
+        .arg(&bin)
+        .args(["--output", "-", "--keep-hashed"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let printed = stdout(&output);
+    assert!(
+        printed.contains("hash[u64] = 0x5d07ca0d22ff9588"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("hash[u64] = 0x0000000000000001"),
+        "{printed}"
+    );
+    assert!(printed.contains("list[hash[u64]] = {"), "{printed}");
+    assert!(
+        !stderr(&output).contains("does not parse back"),
+        "{}",
+        stderr(&output)
+    );
+
+    let back = ws.write("back.rito", &printed);
+    let again = ws.path("again.bin");
+    ws.tool()
+        .arg("convert")
+        .arg(&back)
+        .arg("--output")
+        .arg(&again)
+        .assert()
+        .success();
+    assert_eq!(fs::read(&bin).unwrap(), fs::read(&again).unwrap());
+}
