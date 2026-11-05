@@ -25,7 +25,7 @@ use crate::{declaration, hashes::BinHashes};
 pub const STDIO: &str = "-";
 
 /// The default file extension of ritobin text output.
-pub const DEFAULT_TEXT_EXTENSION: &str = "rito";
+pub const DEFAULT_TEXT_EXTENSION: &str = "ritobin";
 
 /// The file extensions that a directory scan treats as ritobin text.
 pub const TEXT_EXTENSIONS: &[&str] = &["rito", "ritobin", "py"];
