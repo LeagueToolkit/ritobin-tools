@@ -2,11 +2,11 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 
-The LeagueToolkit command line tool for League of Legends `.bin` files. It converts between the binary format and ritobin text (`.rito`), shows the difference between two bins, saves that difference as a `PTCH` patch, applies `PTCH` patches to a bin, and manages the hashtables that resolve hashes to names.
+The LeagueToolkit command line tool for League of Legends `.bin` files. It converts between the binary format and ritobin text (`.ritobin`), shows the difference between two bins, saves that difference as a `PTCH` patch, applies `PTCH` patches to a bin, and manages the hashtables that resolve hashes to names.
 
 ## Features
 
-- **Convert** `.bin` to `.rito` and back, for both `PROP` bins and `PTCH` patch bins
+- **Convert** `.bin` to `.ritobin` and back, for both `PROP` bins and `PTCH` patch bins
 - **YAML and JSON**: write a bin without types as YAML that builds back into a bin, or as JSON for scripts
 - **Format** ritobin text files in place, with comments kept
 - **Diff** two bins as a line diff, a per-object summary, JSON, JSON Lines or CSV
@@ -93,9 +93,9 @@ Common flags:
 - `[INPUTS]...` or `-i, --input <PATH>...`: files or directories. `-` reads standard input. `game:<BIN>` reads a bin of the installed game, see [Game bins as inputs](#game-bins-as-inputs)
 - `-o, --output <PATH>`: a file for a file input, a directory for a directory input, or `-` for standard output. Requires exactly one input
 - `-r, --recursive`: include the subdirectories of a directory input
-- `-t, --to <bin|rito|yaml|json>`: output format. Defaults to the format of the output file extension. Without one, a binary bin is converted to ritobin text and every other input to a binary bin
-- `--from <bin|rito|yaml>`: input format that a directory input is scanned for. Defaults to `bin` if `--to` is a text format, and to `rito` if `--to` is `bin`
-- `--ext <EXT>`: file extension for text output (default `rito`)
+- `-t, --to <bin|ritobin|yaml|json>`: output format. Defaults to the format of the output file extension. Without one, a binary bin is converted to ritobin text and every other input to a binary bin
+- `--from <bin|ritobin|yaml>`: input format that a directory input is scanned for. Defaults to `bin` if `--to` is a text format, and to `ritobin` if `--to` is `bin`
+- `--ext <EXT>`: file extension for text output (default `ritobin`)
 - `-k, --keep-hashed`: write hashes as hex
 - `--lenient`: convert text that has problems. The invalid parts are skipped
 - `--skip-existing`: do not overwrite an existing output file
@@ -106,7 +106,7 @@ Basic examples:
 
 ```bash
 # Set the output path
-ritobin-tools convert skin0.bin -o out/skin0.rito
+ritobin-tools convert skin0.bin -o out/skin0.ritobin
 
 # Convert every .bin in a directory tree to text
 ritobin-tools convert ./data -r
@@ -118,10 +118,10 @@ ritobin-tools convert ./data -r --to bin -o ./build
 ritobin-tools convert skin0.bin --ext py --indent-size 2
 
 # Read standard input, write standard output
-ritobin-tools convert - < skin0.bin > skin0.rito
+ritobin-tools convert - < skin0.bin > skin0.ritobin
 ```
 
-A directory scan selects files by extension: `.bin` for binary, and `.rito`, `.ritobin` and `.py` for text. One run converts in one direction only. In a folder that contains both `skin0.bin` and `skin0.rito`, a run therefore never overwrites one with the other. A `.py` file is included only if it starts with the `#PROP_text` or `#PTCH_text` header, so Python source files in the same folder are skipped.
+A directory scan selects files by extension: `.bin` for binary, and `.ritobin`, `.ritobin` and `.py` for text. One run converts in one direction only. In a folder that contains both `skin0.bin` and `skin0.ritobin`, a run therefore never overwrites one with the other. A `.py` file is included only if it starts with the `#PROP_text` or `#PTCH_text` header, so Python source files in the same folder are skipped.
 
 Text is validated before it is converted. A syntax error or a type error fails the conversion and is shown with its source line. A run with several inputs converts the valid files, reports the invalid files, and exits with 1.
 
@@ -129,7 +129,7 @@ Text printed from a bin is verified: the tool parses the text again and compares
 
 A `hash` value occupies 4 or 8 bytes in a bin. The PBE build of patch 16.21 stores `StaticMaterialDef.name` in 8 bytes. A bin does not store the hash function, so an 8-byte hash is printed with its width and as `0x` and 16 hex digits: `name: hash[u64] = 0x5d07ca0d22ff9588`. A 4-byte hash is printed as `hash`, which reads as `hash[u32,fnv1a]`. No hashtable has names for 8-byte hashes. Text that is written by hand can name the hash function, and a string is then hashed with it: `name: hash[u64,xxh3] = "Characters/Zac/Skins/Skin31/Materials/ult"`. The function is `fnv1a`, `xxh64` or `xxh3`, and the width is `u32` or `u64`. A `hash[u32]` or `hash[u64]` accepts a hex literal only, because nothing can hash a string without a function. A type argument takes the same forms: `list[hash[u64,xxh3]]`. YAML writes an 8-byte hash as the `0x` literal, and the literal builds back to an 8-byte hash if the installed game declares the property as a `hash`. `search` matches an 8-byte hash by its `0x` literal.
 
-A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.rito` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
+A run never overwrites one of its inputs. The command fails before it writes any file if an output path equals an input path. For example, `skin0.bin` and `skin0.ritobin` cannot be passed together, because each would overwrite the other. Converting a file to its own format (`--to bin` on a bin) requires `-o`. Such a conversion decodes and re-encodes the file, so the comments of a text file are lost.
 
 #### YAML and JSON
 
@@ -212,7 +212,7 @@ ritobin-tools format <PATHS>... [OPTIONS]
 
 ```bash
 # Rewrite a file in place
-ritobin-tools format skin0.rito
+ritobin-tools format skin0.ritobin
 
 # Format every text file in a directory tree
 ritobin-tools format ./data -r
@@ -221,8 +221,8 @@ ritobin-tools format ./data -r
 ritobin-tools format ./data -r --check
 
 # Write the formatted text to another file, or to standard output
-ritobin-tools format skin0.rito -o formatted.rito
-ritobin-tools format - < skin0.rito
+ritobin-tools format skin0.ritobin -o formatted.ritobin
+ritobin-tools format - < skin0.ritobin
 ```
 
 Flags:
@@ -264,11 +264,11 @@ Formats:
 | `json` | One document with the summary, all changes and the patch statistics |
 | `jsonl` | One JSON object per change, one object per line |
 | `csv` | One row per change |
-| `rito` | The `PTCH` patch as ritobin text |
+| `ritobin` | The `PTCH` patch as ritobin text |
 
 `unified` compares the printed text, so it also reports objects, properties and map entries that only changed position. The other formats compare values and ignore their order.
 
-Every format except `unified` and `rito` lists changes. A change has these fields:
+Every format except `unified` and `ritobin` lists changes. A change has these fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -298,7 +298,7 @@ ritobin-tools diff old.bin new.bin -f jsonl --exit-code > changes.jsonl
 
 #### Saving a diff as a patch
 
-`--patch` writes the difference as a `PTCH` file. The file is text if the path has a ritobin text extension such as `.rito`, otherwise binary.
+`--patch` writes the difference as a `PTCH` file. The file is text if the path has a ritobin text extension such as `.ritobin`, otherwise binary.
 
 ```bash
 ritobin-tools diff base.bin edited.bin --patch edited.ptch.bin
@@ -317,7 +317,7 @@ The tool logs a warning if a limitation affects the patch. The `json` format lis
 
 #### Comparing two PTCH files
 
-Every format except `rito` also compares two `PTCH` files. The changes are:
+Every format except `ritobin` also compares two `PTCH` files. The changes are:
 
 - `deletion_added` and `deletion_removed`: an object that only one delete list has.
 - The object changes of two bins, for the whole objects of the two files.
@@ -330,7 +330,7 @@ Every format except `rito` also compares two `PTCH` files. The changes are:
   + skinScale: f32 = 1.1
 ```
 
-The `json` format has `patch: null` for two `PTCH` files, because no patch is generated. `--patch` and the `rito` format require two `PROP` bins. To compare a `PROP` bin with a `PTCH` file, use the `unified` format, or apply the `PTCH` file with [patch](#patch) first.
+The `json` format has `patch: null` for two `PTCH` files, because no patch is generated. `--patch` and the `ritobin` format require two `PROP` bins. To compare a `PROP` bin with a `PTCH` file, use the `unified` format, or apply the `PTCH` file with [patch](#patch) first.
 
 ### patch
 
@@ -346,7 +346,7 @@ Common flags:
 - `--in-place`: overwrite `BASE` with the patched bin, in the format of `BASE`
 - `-n, --dry-run`: print the report only. Write no file
 - `--partial`: write the patched bin even if a record cannot be applied
-- `-t, --to <bin|rito|yaml|json>`: output format. Defaults to the format of the `-o` file extension, or to the format of `BASE`
+- `-t, --to <bin|ritobin|yaml|json>`: output format. Defaults to the format of the `-o` file extension, or to the format of `BASE`
 - `-f, --format <table|json>`: format of the report (default `table`)
 - `-k, --keep-hashed`, `--lenient`, and the text layout flags of `convert`
 
@@ -365,7 +365,7 @@ ritobin-tools patch skin0.bin first.ptch second.ptch --in-place
 ritobin-tools patch skin0.bin edited.ptch --dry-run
 
 # Print the patched bin as text
-ritobin-tools patch skin0.bin edited.ptch -o - --to rito
+ritobin-tools patch skin0.bin edited.ptch -o - --to ritobin
 ```
 
 A `PTCH` file is applied in three steps, in the same order as in the game:
@@ -417,16 +417,16 @@ ritobin-tools merge <BASE> <EDITS>... [OPTIONS]
 
 ```bash
 # Merge an edit into a bin and write the result to a new file
-ritobin-tools merge skin0.bin edit.rito -o merged.bin
+ritobin-tools merge skin0.bin edit.ritobin -o merged.bin
 
 # Merge several edits in order. A later edit replaces the values of an earlier edit
 ritobin-tools merge skin0.bin first.bin second.bin --in-place
 
 # Merge an edit into the current game bin
-ritobin-tools merge game:data/characters/teemo/skins/skin0.bin edit.rito -o ./out/skin0.bin
+ritobin-tools merge game:data/characters/teemo/skins/skin0.bin edit.ritobin -o ./out/skin0.bin
 
 # Print the report only
-ritobin-tools merge skin0.bin edit.rito --dry-run
+ritobin-tools merge skin0.bin edit.ritobin --dry-run
 ```
 
 The output flags are those of [patch](#patch): one of `-o, --output <FILE>`, `--in-place` and `-n, --dry-run` is required, and `-t, --to`, `-f, --format`, `-k`, `--lenient` and the text layout flags are accepted.
@@ -447,7 +447,7 @@ The command prints a report with one row per edit bin:
 
 ```
 EDIT       ADDED  MERGED  REPLACED  VALUES  INSERTED  KEYS  LINKS  MISMATCHED
-edit.rito  1      1       0         2       1         0     1      0
+edit.ritobin  1      1       0         2       1         0     1      0
 ```
 
 | Column | Meaning |
@@ -487,7 +487,7 @@ ritobin-tools search 0.7 --field selfIllumination
 ritobin-tools search -e '\.skn$' --type string --wad Champions/Teemo
 
 # Search files and directories, and print JSON Lines
-ritobin-tools search mushroom ./data skin0.rito -f jsonl
+ritobin-tools search mushroom ./data skin0.ritobin -f jsonl
 
 # Search the bins inside a mod package or a WAD archive
 ritobin-tools search Characters/Teemo/Skins/Skin0 -x my-mod.fantome Teemo.wad.client
@@ -686,7 +686,7 @@ ritobin-tools gamedata render Characters/Teemo/Skins/Skin0:skinMeshProperties.te
 ritobin-tools gamedata render Characters/Teemo/Skins/Skin0 --bin skin0.bin
 
 # Write a game bin to a file
-ritobin-tools gamedata extract data/characters/teemo/skins/skin0.bin -o skin0.rito
+ritobin-tools gamedata extract data/characters/teemo/skins/skin0.bin -o skin0.ritobin
 ```
 
 Common flags:
@@ -695,7 +695,7 @@ Common flags:
 - `--game-dir <DIR>`: path to the `Game` directory of an installation, or to its parent directory. Defaults to `game_dir` from the config
 - `--index-dir <DIR>`: directory for the game index cache. Defaults to a directory under the user data directory
 - `-f, --format <table|json>` on `check` and `apply`: format of the report
-- `-o, --output <DIR>`, `-t, --to <bin|rito|yaml|json>`, `--ext`, `-k` and the text layout flags on `apply`
+- `-o, --output <DIR>`, `-t, --to <bin|ritobin|yaml|json>`, `--ext`, `-k` and the text layout flags on `apply`
 
 How a manifest is applied:
 
@@ -751,7 +751,7 @@ Flags:
 - `--bin <TEXT>`: also select the bins whose path contains the text. With `--wad`, a bin must pass both filters
 - `-o, --output <FILE>`: write one bin to a file. `-` writes standard output. The command fails if more than one bin is selected
 - `-d, --output-dir <DIR>`: write each bin at its game path under a directory
-- `-t, --to <bin|rito|yaml|json>`: output format. Defaults to the format of the `-o` file extension, or to `bin`
+- `-t, --to <bin|ritobin|yaml|json>`: output format. Defaults to the format of the `-o` file extension, or to `bin`
 - `--skip-existing`: do not overwrite an existing output file
 - `--ext`, `-k`, `--no-verify` and the text layout flags of `convert`
 
@@ -841,9 +841,9 @@ ritobin-tools shell uninstall   # remove the menu
 
 | Right-click on | Entries |
 | --- | --- |
-| A `.bin` file | Convert to .rito, Update hashtables |
+| A `.bin` file | Convert to .ritobin, Update hashtables |
 | A `.rito` or `.ritobin` file | Convert to .bin |
-| A folder | Convert all .bin to .rito, Convert all .rito to .bin, Update hashtables |
+| A folder | Convert all .bin to .ritobin, Convert all .ritobin to .bin, Update hashtables |
 
 The folder entries include subfolders. Each entry runs in a new console window. After a file conversion, the window stays open only if the conversion failed. After a folder conversion or a hashtable update, the window always waits for Enter.
 
